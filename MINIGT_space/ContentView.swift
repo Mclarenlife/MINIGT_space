@@ -7,6 +7,7 @@ struct ContentView: View {
     @StateObject private var store = CollectionStore()
     @AppStorage("minigt.selectedTheme") private var selectedThemeRaw = AppTheme.system.rawValue
     @AppStorage("minigt.completedOnboardingInstallMarker") private var completedOnboardingInstallMarker = ""
+    @AppStorage("minigt.keyboardWarmupInstallMarker") private var keyboardWarmupInstallMarker = ""
     @State private var isShowingInitialization = false
     @State private var hasRequestedCatalogLoad = false
 
@@ -51,9 +52,10 @@ struct ContentView: View {
             .task {
                 guard hasRequestedCatalogLoad == false else { return }
                 hasRequestedCatalogLoad = true
+                guard needsOnboarding == false else { return }
 
                 await Task.yield()
-                try? await Task.sleep(for: .milliseconds(120))
+                try? await Task.sleep(for: .milliseconds(320))
                 store.startLoadingCatalog()
             }
     }
@@ -73,11 +75,20 @@ struct ContentView: View {
 
         Task { @MainActor in
             await Task.yield()
+            try? await Task.sleep(for: .milliseconds(280))
             store.startLoadingCatalog()
-            try? await Task.sleep(for: .seconds(1))
+            let shouldWarmKeyboard = keyboardWarmupInstallMarker != InstallIdentity.current
+            async let minimumDisplay: Void = Task.sleep(for: .seconds(1))
+            async let keyboardWarmup: Void = shouldWarmKeyboard ? KeyboardWarmupCoordinator.warmUp() : ()
 
             while store.isCatalogLoading {
                 try? await Task.sleep(for: .milliseconds(80))
+            }
+
+            _ = try? await minimumDisplay
+            await keyboardWarmup
+            if shouldWarmKeyboard {
+                keyboardWarmupInstallMarker = InstallIdentity.current
             }
 
             completedOnboardingInstallMarker = InstallIdentity.current
@@ -182,41 +193,103 @@ private struct OnboardingFeature {
     var message: String
 }
 
+@MainActor
+private enum KeyboardWarmupCoordinator {
+    static func warmUp() async {
+        await warmUpKeyboard(type: .default, timeout: 4.0)
+        try? await Task.sleep(for: .milliseconds(120))
+        await warmUpKeyboard(type: .decimalPad, timeout: 2.0)
+    }
+
+    private static func warmUpKeyboard(type: UIKeyboardType, timeout: TimeInterval) async {
+        guard let window = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow) else {
+            try? await Task.sleep(for: .milliseconds(250))
+            return
+        }
+
+        let textField = UITextField(frame: CGRect(x: -4, y: -4, width: 1, height: 1))
+        textField.alpha = 0.01
+        textField.keyboardType = type
+        textField.autocorrectionType = .no
+        textField.spellCheckingType = .no
+        window.addSubview(textField)
+
+        await withCheckedContinuation { continuation in
+            var didResume = false
+            var observer: NSObjectProtocol?
+
+            let finish: () -> Void = {
+                guard didResume == false else { return }
+                didResume = true
+                if let observer {
+                    NotificationCenter.default.removeObserver(observer)
+                }
+                textField.resignFirstResponder()
+                textField.removeFromSuperview()
+                continuation.resume()
+            }
+
+            observer = NotificationCenter.default.addObserver(
+                forName: UIResponder.keyboardDidShowNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: finish)
+            }
+
+            textField.becomeFirstResponder()
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+                finish()
+            }
+        }
+    }
+}
+
 private struct InitializationOverlay: View {
     @Environment(\.themeContext) private var theme
     var progress: Double
 
     var body: some View {
         ZStack {
-            theme.palette.background.opacity(0.45).ignoresSafeArea()
+            theme.palette.background.opacity(0.58).ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 14) {
-                Text("正在初始化")
-                    .font(.headline)
-                    .foregroundStyle(theme.palette.primaryText)
+            VStack(spacing: 16) {
+                ZStack {
+                    Circle()
+                        .stroke(theme.palette.elevated.opacity(0.9), lineWidth: 7)
+                        .frame(width: 58, height: 58)
 
-                ProgressView(value: clampedProgress)
-                    .progressViewStyle(.linear)
-                    .tint(theme.palette.accent)
-                    .frame(height: 6)
-                    .animation(.easeInOut(duration: 0.16), value: clampedProgress)
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .controlSize(.large)
+                        .scaleEffect(1.12)
+                }
+                .tint(theme.palette.accent)
 
-                Text("正在整理产品库，请稍等片刻。")
-                    .font(.caption)
-                    .foregroundStyle(theme.palette.secondaryText)
+                VStack(spacing: 5) {
+                    Text("正在初始化")
+                        .font(.headline)
+                        .foregroundStyle(theme.palette.primaryText)
+
+                    Text("正在整理产品库，请稍等片刻。")
+                        .font(.caption)
+                        .foregroundStyle(theme.palette.secondaryText)
+                        .multilineTextAlignment(.center)
+                }
             }
-            .padding(18)
-            .frame(width: 260, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .padding(.horizontal, 22)
+            .padding(.vertical, 20)
+            .frame(width: 236)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(theme.palette.elevated.opacity(0.8), lineWidth: 1)
             }
+            .shadow(color: .black.opacity(0.16), radius: 24, x: 0, y: 14)
         }
-    }
-
-    private var clampedProgress: Double {
-        min(max(progress, 0.04), 1)
     }
 }
 
@@ -536,7 +609,7 @@ final class CollectionStore: ObservableObject {
         progressTask = nil
         catalogLoadingProgress = 1
         isCatalogLoading = false
-        refreshCatalogFromOSSIfNeeded(force: false)
+        refreshCatalogFromOSSIfNeeded(force: false, delay: 8)
     }
 
     private func startProgressTicker() {
@@ -745,7 +818,7 @@ final class CollectionStore: ObservableObject {
     }
 
     func refreshCatalogFromOSS() {
-        refreshCatalogFromOSSIfNeeded(force: true)
+        refreshCatalogFromOSSIfNeeded(force: true, delay: 0)
     }
 
     func resetDemoData() {
@@ -757,12 +830,16 @@ final class CollectionStore: ObservableObject {
         placements = []
         isReadyToPersist = true
         save()
-        refreshCatalogFromOSSIfNeeded(force: true)
+        refreshCatalogFromOSSIfNeeded(force: true, delay: 0)
     }
 
-    private func refreshCatalogFromOSSIfNeeded(force: Bool) {
+    private func refreshCatalogFromOSSIfNeeded(force: Bool, delay: TimeInterval) {
         catalogRefreshTask?.cancel()
         catalogRefreshTask = Task { [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(for: .seconds(delay))
+                guard Task.isCancelled == false else { return }
+            }
             let refreshedCatalog = await ProductCatalogRemoteSource.refreshIfNeeded(force: force)
             guard let self, let refreshedCatalog else { return }
             applyRemoteCatalog(refreshedCatalog)
@@ -1080,6 +1157,8 @@ private struct LibraryView: View {
             .navigationTitle("MINIGT 库")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: "搜索车型、品牌、编号")
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(true)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     NavigationLink {
@@ -1600,6 +1679,8 @@ private struct CollectionFormView: View {
 
                     TextField("收藏价格（可选）", text: $priceText)
                         .keyboardType(.decimalPad)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
 
                     Picker("购入渠道", selection: $channel) {
                         ForEach(PurchaseChannel.allCases) { channel in
@@ -1732,6 +1813,8 @@ private struct CollectionTabView: View {
             .navigationTitle("我的藏品")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: mode == .cards ? "搜索已收藏模型" : "搜索")
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled(true)
         }
     }
 
