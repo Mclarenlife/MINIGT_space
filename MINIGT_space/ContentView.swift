@@ -1127,6 +1127,12 @@ private struct ProgressDisplaySummary {
     var total: Int
 }
 
+private enum AppCorners {
+    static let container: CGFloat = 16
+    static let productCard: CGFloat = 14
+    static let productArtwork: CGFloat = 12
+}
+
 private struct LibraryView: View {
     @EnvironmentObject private var store: CollectionStore
     @Environment(\.themeContext) private var theme
@@ -1386,10 +1392,10 @@ private struct LibraryHeader<ProgressControl: View>: View {
         ZStack(alignment: .bottomTrailing) {
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous)
                         .fill(theme.palette.surface)
 
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous)
                         .fill(theme.palette.accent.opacity(0.22))
                         .frame(width: max(0, proxy.size.width * clampedProgress))
                 }
@@ -1433,9 +1439,9 @@ private struct LibraryHeader<ProgressControl: View>: View {
                 .padding(12)
         }
         .frame(maxWidth: .infinity, minHeight: 136, alignment: .leading)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous)
                 .stroke(theme.palette.elevated.opacity(0.75), lineWidth: 1)
         )
     }
@@ -1588,10 +1594,11 @@ private struct ModelCard: View {
             ZStack(alignment: .topTrailing) {
                 CarArtworkView(model: model)
                     .frame(height: Self.artworkHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: AppCorners.productArtwork, style: .continuous))
 
                 StatusTag(status: model.status)
-                    .padding(8)
+                    .padding(.top, 2)
+                    .padding(.trailing, 2)
             }
 
             VStack(alignment: .leading, spacing: 3) {
@@ -1622,14 +1629,14 @@ private struct ModelCard: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: AppCorners.productCard, style: .continuous))
         .background {
             if isCollected || isGlowing {
                 CardGlowOverlay(color: theme.palette.accent, isActive: isGlowing)
             }
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: AppCorners.productCard, style: .continuous)
                 .stroke(theme.palette.elevated.opacity(isCollected ? 0.62 : 1), lineWidth: 1)
         }
     }
@@ -2313,98 +2320,29 @@ private struct PlacementControls: View {
 
 // MARK: - Stats
 
-private enum StatsProgressKind {
-    case overall
-    case brand
-    case category
-}
-
-private struct StatsProgressSummary {
-    var title: String
-    var detail: String
-    var progress: Double
-}
-
 private struct StatsView: View {
     @EnvironmentObject private var store: CollectionStore
     @Environment(\.themeContext) private var theme
-    @State private var progressKind: StatsProgressKind = .overall
     @State private var selectedProgressBrandId: Int?
     @State private var selectedProgressCategoryId: Int?
+    @AppStorage("minigt.stats.visibleBrandProgressIds") private var visibleBrandProgressIdsRaw = ""
+    @AppStorage("minigt.stats.visibleCategoryProgressIds") private var visibleCategoryProgressIdsRaw = ""
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    VStack(spacing: 12) {
-                        HStack(alignment: .top) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(selectedProgress.title)
-                                    .font(.headline)
-                                    .foregroundStyle(theme.palette.primaryText)
-                                Text(selectedProgress.detail)
-                                    .font(.subheadline)
-                                    .foregroundStyle(theme.palette.secondaryText)
-                            }
-
-                            Spacer()
-
-                            Menu {
-                                Button {
-                                    progressKind = .overall
-                                } label: {
-                                    Label("总进度", systemImage: progressKind == .overall ? "checkmark" : "chart.pie")
-                                }
-
-                                Section("品牌进度") {
-                                    ForEach(store.brands.sorted { $0.sortOrder < $1.sortOrder }) { brand in
-                                        Button {
-                                            progressKind = .brand
-                                            selectedProgressBrandId = brand.id
-                                        } label: {
-                                            Label(brand.name, systemImage: isSelectedProgressBrand(brand) ? "checkmark" : "tag")
-                                        }
-                                    }
-                                }
-
-                                Section("分类进度") {
-                                    ForEach(categoryDisplayRows) { row in
-                                        Button {
-                                            progressKind = .category
-                                            selectedProgressCategoryId = row.category.id
-                                        } label: {
-                                            Label(categoryMenuTitle(for: row), systemImage: isSelectedProgressCategory(row.category) ? "checkmark" : "square.grid.2x2")
-                                        }
-                                    }
-                                }
-                            } label: {
-                                Image(systemName: "slider.horizontal.3")
-                                    .font(.headline)
-                                    .foregroundStyle(theme.palette.accent)
-                                    .frame(width: 36, height: 36)
-                                    .background(theme.palette.surface, in: Circle())
-                            }
-                            .accessibilityLabel("选择进度")
-                        }
-
-                        ProgressRing(progress: selectedProgress.progress, lineWidth: 14)
-                            .frame(width: 148, height: 148)
-
-                        Text("\(Int((selectedProgress.progress * 100).rounded()))%")
-                            .font(.system(.largeTitle, design: .rounded).weight(.bold))
-                            .foregroundStyle(theme.palette.primaryText)
+                    LibraryHeader(summary: selectedProgress) {
+                        progressSelectionMenu
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(20)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                     HStack(spacing: 12) {
                         StatTile(title: "总投入", value: Currency.format(store.totalSpent), symbolName: "yensign.circle")
                         StatTile(title: "入坑时间", value: entryDurationText, symbolName: "clock")
                     }
 
-                    ProgressSection(title: "品牌进度") {
-                        ForEach(store.brands.sorted { $0.sortOrder < $1.sortOrder }) { brand in
+                    ProgressSection(title: "品牌进度", accessory: AnyView(brandProgressFilterMenu)) {
+                        ForEach(displayedBrands) { brand in
                             let progress = store.progressForBrand(brand)
                             NavigationLink {
                                 ModelSubsetView(title: "\(brand.name) 未收藏", models: store.uncollectedModelsForBrand(brand))
@@ -2415,8 +2353,8 @@ private struct StatsView: View {
                         }
                     }
 
-                    ProgressSection(title: "分类进度") {
-                        ForEach(categoryDisplayRows) { row in
+                    ProgressSection(title: "分类进度", accessory: AnyView(categoryProgressFilterMenu)) {
+                        ForEach(displayedCategoryRows) { row in
                             let progress = store.progressForCategory(row.category)
                             NavigationLink {
                                 ModelSubsetView(title: "\(row.category.name) 未收藏", models: store.uncollectedModelsForCategory(row.category))
@@ -2436,54 +2374,124 @@ private struct StatsView: View {
         }
     }
 
-    private var selectedProgress: StatsProgressSummary {
-        switch progressKind {
-        case .overall:
-            return overallProgressSummary
-        case .brand:
-            guard let brand = selectedProgressBrand else { return overallProgressSummary }
-            let progress = store.progressForBrand(brand)
-            return StatsProgressSummary(
-                title: "\(brand.name) 进度",
-                detail: "已点亮 \(progress.owned) 台，已出货 \(progress.total) 台",
-                progress: progress.progress
-            )
-        case .category:
-            guard let category = selectedProgressCategory else { return overallProgressSummary }
-            let progress = store.progressForCategory(category)
-            return StatsProgressSummary(
-                title: "\(category.name) 进度",
-                detail: "已点亮 \(progress.owned) 台，已出货 \(progress.total) 台",
-                progress: progress.progress
-            )
+    private var progressSelectionMenu: some View {
+        Menu {
+            Button {
+                selectedProgressBrandId = nil
+                selectedProgressCategoryId = nil
+            } label: {
+                Label("总进度", systemImage: selectedProgressBrandId == nil && selectedProgressCategoryId == nil ? "checkmark" : "chart.pie")
+            }
+
+            Section("品牌") {
+                Button {
+                    selectedProgressBrandId = nil
+                } label: {
+                    Label("全部品牌", systemImage: selectedProgressBrandId == nil ? "checkmark" : "tag")
+                }
+
+                ForEach(store.brands.sorted { $0.sortOrder < $1.sortOrder }) { brand in
+                    Button {
+                        selectedProgressBrandId = brand.id
+                    } label: {
+                        Label(brand.name, systemImage: isSelectedProgressBrand(brand) ? "checkmark" : "tag")
+                    }
+                }
+            }
+
+            Section("分类") {
+                Button {
+                    selectedProgressCategoryId = nil
+                } label: {
+                    Label("全部分类", systemImage: selectedProgressCategoryId == nil ? "checkmark" : "square.grid.2x2")
+                }
+
+                ForEach(categoryDisplayRows) { row in
+                    Button {
+                        selectedProgressCategoryId = row.category.id
+                    } label: {
+                        Label(categoryMenuTitle(for: row), systemImage: isSelectedProgressCategory(row.category) ? "checkmark" : "square.grid.2x2")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.headline)
+                .foregroundStyle(theme.palette.accent)
+                .frame(width: 36, height: 36)
+                .background(theme.palette.surface.opacity(0.9), in: Circle())
         }
+        .accessibilityLabel("设置收藏进度")
     }
 
-    private var overallProgressSummary: StatsProgressSummary {
+    private var selectedProgress: ProgressDisplaySummary {
+        let brand = selectedProgressBrand
+        let category = selectedProgressCategory
+        guard brand != nil || category != nil else { return overallProgressSummary }
+
+        let progress = store.progressForSelection(brandId: brand?.id, categoryId: category?.id)
+        return ProgressDisplaySummary(
+            title: progressTitle(brand: brand, category: category),
+            detail: progressDetail(brand: brand, category: category),
+            progress: progress.progress,
+            owned: progress.owned,
+            total: progress.total
+        )
+    }
+
+    private var overallProgressSummary: ProgressDisplaySummary {
         let releasedCollected = store.releasedModels.filter { store.isCollected($0) }.count
-        return StatsProgressSummary(
+        return ProgressDisplaySummary(
             title: "总进度",
-            detail: "已点亮 \(releasedCollected) 台，已出货 \(store.releasedModels.count) 台",
-            progress: store.overallProgress
+            detail: "全部已发布模型",
+            progress: store.overallProgress,
+            owned: releasedCollected,
+            total: store.releasedModels.count
         )
     }
 
     private var selectedProgressBrand: MiniGTBrand? {
-        let id = selectedProgressBrandId ?? store.brands.sorted { $0.sortOrder < $1.sortOrder }.first?.id
-        return store.brands.first { $0.id == id }
+        guard let selectedProgressBrandId else { return nil }
+        return store.brands.first { $0.id == selectedProgressBrandId }
     }
 
     private var selectedProgressCategory: MiniGTCategory? {
-        let id = selectedProgressCategoryId ?? categoryDisplayRows.first?.category.id
-        return store.categories.first { $0.id == id }
+        guard let selectedProgressCategoryId else { return nil }
+        return store.categories.first { $0.id == selectedProgressCategoryId }
     }
 
     private func isSelectedProgressBrand(_ brand: MiniGTBrand) -> Bool {
-        progressKind == .brand && selectedProgressBrand?.id == brand.id
+        selectedProgressBrandId == brand.id
     }
 
     private func isSelectedProgressCategory(_ category: MiniGTCategory) -> Bool {
-        progressKind == .category && selectedProgressCategory?.id == category.id
+        selectedProgressCategoryId == category.id
+    }
+
+    private func progressTitle(brand: MiniGTBrand?, category: MiniGTCategory?) -> String {
+        switch (brand, category) {
+        case let (brand?, category?):
+            return "\(brand.name) · \(category.name)"
+        case let (brand?, nil):
+            return brand.name
+        case let (nil, category?):
+            return category.name
+        default:
+            return "总进度"
+        }
+    }
+
+    private func progressDetail(brand: MiniGTBrand?, category: MiniGTCategory?) -> String {
+        switch (brand, category) {
+        case (_?, _?):
+            return "品牌 · 分类细分"
+        case (_?, nil):
+            return "品牌收藏进度"
+        case (nil, _?):
+            return "分类收藏进度"
+        default:
+            return "全部已发布模型"
+        }
     }
 
     private func categoryMenuTitle(for row: CategoryDisplayRow) -> String {
@@ -2507,12 +2515,113 @@ private struct StatsView: View {
 
     private var entryDurationText: String {
         guard let first = store.firstCollectedDate else { return "未开始" }
-        let components = Calendar.current.dateComponents([.year, .month], from: first, to: Date())
-        let years = components.year ?? 0
-        let months = components.month ?? 0
-        if years == 0 && months == 0 { return "本月" }
-        if years == 0 { return "\(months) 个月" }
-        return "\(years) 年 \(months) 个月"
+        let days = Int(max(0, Date().timeIntervalSince(first)) / 86_400)
+        return "\(days) 天"
+    }
+
+    private var displayedBrands: [MiniGTBrand] {
+        let brands = store.brands.sorted { $0.sortOrder < $1.sortOrder }
+        guard let ids = decodedIdSet(visibleBrandProgressIdsRaw) else { return brands }
+        return brands.filter { ids.contains($0.id) }
+    }
+
+    private var displayedCategoryRows: [CategoryDisplayRow] {
+        guard let ids = decodedIdSet(visibleCategoryProgressIdsRaw) else { return categoryDisplayRows }
+        return categoryDisplayRows.filter { ids.contains($0.category.id) }
+    }
+
+    private var brandProgressFilterMenu: some View {
+        Menu {
+            Button {
+                visibleBrandProgressIdsRaw = ""
+            } label: {
+                Label("显示全部", systemImage: visibleBrandProgressIds == nil ? "checkmark" : "line.3.horizontal.decrease")
+            }
+
+            Section("品牌") {
+                ForEach(store.brands.sorted { $0.sortOrder < $1.sortOrder }) { brand in
+                    Button {
+                        toggleBrandProgressVisibility(brand)
+                    } label: {
+                        Label(brand.name, systemImage: isBrandProgressVisible(brand) ? "checkmark" : "circle")
+                    }
+                }
+            }
+        } label: {
+            ProgressFilterButton()
+        }
+        .accessibilityLabel("筛选品牌进度")
+    }
+
+    private var categoryProgressFilterMenu: some View {
+        Menu {
+            Button {
+                visibleCategoryProgressIdsRaw = ""
+            } label: {
+                Label("显示全部", systemImage: visibleCategoryProgressIds == nil ? "checkmark" : "line.3.horizontal.decrease")
+            }
+
+            Section("分类") {
+                ForEach(categoryDisplayRows) { row in
+                    Button {
+                        toggleCategoryProgressVisibility(row.category)
+                    } label: {
+                        Label(categoryMenuTitle(for: row), systemImage: isCategoryProgressVisible(row.category) ? "checkmark" : "circle")
+                    }
+                }
+            }
+        } label: {
+            ProgressFilterButton()
+        }
+        .accessibilityLabel("筛选分类进度")
+    }
+
+    private var visibleBrandProgressIds: Set<Int>? {
+        decodedIdSet(visibleBrandProgressIdsRaw)
+    }
+
+    private var visibleCategoryProgressIds: Set<Int>? {
+        decodedIdSet(visibleCategoryProgressIdsRaw)
+    }
+
+    private func isBrandProgressVisible(_ brand: MiniGTBrand) -> Bool {
+        visibleBrandProgressIds?.contains(brand.id) ?? true
+    }
+
+    private func isCategoryProgressVisible(_ category: MiniGTCategory) -> Bool {
+        visibleCategoryProgressIds?.contains(category.id) ?? true
+    }
+
+    private func toggleBrandProgressVisibility(_ brand: MiniGTBrand) {
+        var ids = visibleBrandProgressIds ?? Set(store.brands.map(\.id))
+        if ids.contains(brand.id) {
+            ids.remove(brand.id)
+        } else {
+            ids.insert(brand.id)
+        }
+        let allIds = Set(store.brands.map(\.id))
+        visibleBrandProgressIdsRaw = ids == allIds ? "" : encodedIdSet(ids)
+    }
+
+    private func toggleCategoryProgressVisibility(_ category: MiniGTCategory) {
+        var ids = visibleCategoryProgressIds ?? Set(store.categories.map(\.id))
+        if ids.contains(category.id) {
+            ids.remove(category.id)
+        } else {
+            ids.insert(category.id)
+        }
+        let allIds = Set(store.categories.map(\.id))
+        visibleCategoryProgressIdsRaw = ids == allIds ? "" : encodedIdSet(ids)
+    }
+
+    private func decodedIdSet(_ rawValue: String) -> Set<Int>? {
+        guard rawValue.isEmpty == false else { return nil }
+        if rawValue == "none" { return [] }
+        return Set(rawValue.split(separator: ",").compactMap { Int($0) })
+    }
+
+    private func encodedIdSet(_ ids: Set<Int>) -> String {
+        ids.isEmpty ? "none" : ids.sorted().map(String.init).joined(separator: ",")
     }
 }
 
@@ -2544,20 +2653,39 @@ private struct StatTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
+    }
+}
+
+private struct ProgressFilterButton: View {
+    @Environment(\.themeContext) private var theme
+
+    var body: some View {
+        Image(systemName: "line.3.horizontal.decrease.circle")
+            .font(.headline)
+            .foregroundStyle(theme.palette.accent)
+            .frame(width: 32, height: 32)
+            .background(theme.palette.elevated.opacity(0.72), in: Circle())
     }
 }
 
 private struct ProgressSection<Content: View>: View {
     @Environment(\.themeContext) private var theme
     var title: String
+    var accessory: AnyView?
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(theme.palette.primaryText)
+            HStack {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(theme.palette.primaryText)
+                Spacer()
+                if let accessory {
+                    accessory
+                }
+            }
 
             VStack(spacing: 10) {
                 content
@@ -2565,7 +2693,7 @@ private struct ProgressSection<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
     }
 }
 
@@ -2637,69 +2765,72 @@ private struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("外观") {
-                    Picker("模式", selection: $selectedThemeRaw) {
-                        ForEach(AppTheme.allCases) { theme in
-                            Text(theme.title).tag(theme.rawValue)
-                        }
-                    }
-
-                    Picker("主题色", selection: $selectedAccentColorRaw) {
-                        ForEach(AppAccentColor.allCases) { accentColor in
-                            HStack {
-                                Circle()
-                                    .fill(accentColor.color)
-                                    .frame(width: 14, height: 14)
-                                Text(accentColor.title)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    SettingsCardSection(title: "外观") {
+                        SettingsPickerRow(title: "模式", systemImage: "circle.lefthalf.filled", selection: $selectedThemeRaw) {
+                            ForEach(AppTheme.allCases) { theme in
+                                Text(theme.title).tag(theme.rawValue)
                             }
-                            .tag(accentColor.rawValue)
+                        }
+
+                        SettingsDivider()
+
+                        SettingsPickerRow(title: "主题色", systemImage: "paintpalette", selection: $selectedAccentColorRaw) {
+                            ForEach(AppAccentColor.allCases) { accentColor in
+                                HStack {
+                                    Circle()
+                                        .fill(accentColor.color)
+                                        .frame(width: 14, height: 14)
+                                    Text(accentColor.title)
+                                }
+                                .tag(accentColor.rawValue)
+                            }
                         }
                     }
+
+                    SettingsCardSection(title: "数据管理") {
+                        SettingsActionRow(title: "导出收藏数据", systemImage: "square.and.arrow.up") {
+                            showsExport = true
+                        }
+
+                        SettingsDivider()
+
+                        SettingsActionRow(title: "导入模型数据", systemImage: "tray.and.arrow.down") {
+                            showsImporter = true
+                        }
+
+                        SettingsDivider()
+
+                        SettingsActionRow(title: "检查产品表更新", systemImage: "arrow.counterclockwise") {
+                            store.refreshCatalogFromOSS()
+                        }
+
+                        SettingsDivider()
+
+                        SettingsActionRow(title: "清空所有收藏记录", systemImage: "trash", role: .destructive) {
+                            showsClearConfirmation = true
+                        }
+                    }
+
+                    SettingsCardSection(title: "帮助") {
+                        SettingsActionRow(title: "问题反馈", systemImage: "questionmark.circle") {
+                            showsHelp = true
+                        }
+                    }
+
+                    SettingsCardSection(title: "关于") {
+                        SettingsInfoRow(title: "App 版本", value: "1.0", systemImage: "info.circle")
+                        SettingsDivider()
+                        SettingsInfoRow(title: "模型数据来源", value: "本地手动维护", systemImage: "shippingbox")
+                        SettingsDivider()
+                        SettingsInfoRow(title: "数据存储", value: "沙盒 JSON", systemImage: "externaldrive")
+                    }
                 }
-
-                Section("数据管理") {
-                    Button {
-                        showsExport = true
-                    } label: {
-                        Label("导出收藏数据", systemImage: "square.and.arrow.up")
-                    }
-
-                    Button {
-                        showsImporter = true
-                    } label: {
-                        Label("导入模型数据", systemImage: "tray.and.arrow.down")
-                    }
-
-                    Button {
-                        store.refreshCatalogFromOSS()
-                    } label: {
-                        Label("检查产品表更新", systemImage: "arrow.counterclockwise")
-                    }
-
-                    Button(role: .destructive) {
-                        showsClearConfirmation = true
-                    } label: {
-                        Label("清空所有收藏记录", systemImage: "trash")
-                    }
-                }
-
-                Section("帮助") {
-                    Button {
-                        showsHelp = true
-                    } label: {
-                        Label("问题反馈", systemImage: "questionmark.circle")
-                    }
-                }
-
-                Section("关于") {
-                    LabeledContent("App 版本", value: "1.0")
-                    LabeledContent("模型数据来源", value: "本地手动维护")
-                    LabeledContent("数据存储", value: "沙盒 JSON")
-                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
             }
-            .scrollContentBackground(.hidden)
-            .background(theme.palette.background)
+            .background(theme.palette.background.ignoresSafeArea())
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showsExport) {
@@ -2744,6 +2875,146 @@ private struct SettingsView: View {
     }
 }
 
+private struct SettingsCardSection<Content: View>: View {
+    @Environment(\.themeContext) private var theme
+    var title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(theme.palette.secondaryText)
+                .padding(.horizontal, 4)
+
+            VStack(spacing: 0) {
+                content
+            }
+            .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous)
+                    .stroke(theme.palette.elevated.opacity(0.75), lineWidth: 1)
+            )
+        }
+    }
+}
+
+private struct SettingsPickerRow<SelectionValue: Hashable, PickerContent: View>: View {
+    @Environment(\.themeContext) private var theme
+    var title: String
+    var systemImage: String
+    @Binding var selection: SelectionValue
+    @ViewBuilder var content: () -> PickerContent
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SettingsRowIcon(systemImage: systemImage, tint: theme.palette.accent)
+
+            Text(title)
+                .foregroundStyle(theme.palette.primaryText)
+
+            Spacer()
+
+            Picker(title, selection: $selection) {
+                content()
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .tint(theme.palette.accent)
+        }
+        .frame(minHeight: 52)
+        .padding(.horizontal, 14)
+    }
+}
+
+private struct SettingsActionRow: View {
+    @Environment(\.themeContext) private var theme
+    var title: String
+    var systemImage: String
+    var role: ButtonRole?
+    var action: () -> Void
+
+    init(title: String, systemImage: String, role: ButtonRole? = nil, action: @escaping () -> Void) {
+        self.title = title
+        self.systemImage = systemImage
+        self.role = role
+        self.action = action
+    }
+
+    var body: some View {
+        Button(role: role, action: action) {
+            HStack(spacing: 12) {
+                SettingsRowIcon(systemImage: systemImage, tint: rowColor)
+
+                Text(title)
+                    .foregroundStyle(rowColor)
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(theme.palette.secondaryText.opacity(0.7))
+            }
+            .frame(minHeight: 52)
+            .padding(.horizontal, 14)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var rowColor: Color {
+        role == .destructive ? theme.palette.danger : theme.palette.primaryText
+    }
+}
+
+private struct SettingsInfoRow: View {
+    @Environment(\.themeContext) private var theme
+    var title: String
+    var value: String
+    var systemImage: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SettingsRowIcon(systemImage: systemImage, tint: theme.palette.secondaryText)
+
+            Text(title)
+                .foregroundStyle(theme.palette.primaryText)
+
+            Spacer()
+
+            Text(value)
+                .foregroundStyle(theme.palette.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .frame(minHeight: 52)
+        .padding(.horizontal, 14)
+    }
+}
+
+private struct SettingsRowIcon: View {
+    var systemImage: String
+    var tint: Color
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(tint)
+            .frame(width: 30, height: 30)
+            .background(tint.opacity(0.13), in: Circle())
+    }
+}
+
+private struct SettingsDivider: View {
+    @Environment(\.themeContext) private var theme
+
+    var body: some View {
+        Rectangle()
+            .fill(theme.palette.elevated.opacity(0.8))
+            .frame(height: 1 / UIScreen.main.scale)
+            .padding(.leading, 56)
+    }
+}
+
 private struct ExportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.themeContext) private var theme
@@ -2758,7 +3029,7 @@ private struct ExportSheet: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
-                    .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
                     .padding()
             }
             .background(theme.palette.background)
@@ -2792,7 +3063,7 @@ private struct HelpSheet: View {
                 Text("feedback@minigt-space.local")
                     .font(.headline)
                     .textSelection(.enabled)
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous)
                     .fill(theme.palette.surface)
                     .frame(width: 116, height: 116)
                     .overlay {
@@ -3089,7 +3360,10 @@ private struct CarArtworkView: View {
                 Spacer()
             }
             .foregroundStyle(.white)
-            .padding(10)
+            .padding(.top, 3)
+            .padding(.leading, 3)
+            .padding(.trailing, 10)
+            .padding(.bottom, 10)
         }
     }
 }
@@ -3191,12 +3465,12 @@ private struct CardGlowOverlay: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous)
                 .fill(color.opacity(isActive ? (animate ? 0.2 : 0.12) : 0.14))
                 .blur(radius: isActive ? (animate ? 13 : 8) : 9)
                 .padding(isActive ? (animate ? -8 : -4) : -5)
 
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous)
                 .stroke(color.opacity(isActive ? (animate ? 0.18 : 0.34) : 0.24), lineWidth: 4)
                 .blur(radius: isActive ? (animate ? 8 : 4) : 6)
                 .padding(isActive ? (animate ? -7 : -3) : -4)
