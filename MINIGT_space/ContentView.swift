@@ -196,7 +196,7 @@ private struct OnboardingFeature {
 @MainActor
 private enum KeyboardWarmupCoordinator {
     static func warmUp() async {
-        await warmUpKeyboard(type: .default, timeout: 4.0)
+        await warmUpKeyboard(type: .asciiCapable, timeout: 2.0)
         try? await Task.sleep(for: .milliseconds(120))
         await warmUpKeyboard(type: .decimalPad, timeout: 2.0)
     }
@@ -414,6 +414,7 @@ struct MiniGTModel: Identifiable, Codable, Hashable, Sendable {
     var brandId: Int
     var categoryId: Int
     var story: String
+    var limitedInfo: String? = nil
     var releaseYear: Int?
     var scale: String
     var modelNumber: String?
@@ -1157,6 +1158,7 @@ private struct LibraryView: View {
             .navigationTitle("MINIGT 库")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: "搜索车型、品牌、编号")
+            .keyboardType(.asciiCapable)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled(true)
             .toolbar {
@@ -1581,7 +1583,7 @@ private struct DetailInfoGrid: View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
             DetailInfoTile(title: "比例", value: model.scale, symbolName: "ruler")
             DetailInfoTile(title: "编号", value: model.modelNumber ?? "未录入", symbolName: "number")
-            DetailInfoTile(title: "年份", value: model.releaseYear.map(String.init) ?? "待定", symbolName: "calendar")
+            DetailInfoTile(title: "限定信息", value: limitedInfoText, symbolName: "star.circle")
             DetailInfoTile(title: "分类", value: store.category(for: model)?.name ?? "未分类", symbolName: "square.grid.2x2")
             if let collection {
                 DetailInfoTile(title: "入手价", value: collection.price.map { Currency.format($0) } ?? "未录入", symbolName: "yensign.circle")
@@ -1589,6 +1591,11 @@ private struct DetailInfoGrid: View {
             }
         }
         .foregroundStyle(theme.palette.primaryText)
+    }
+
+    private var limitedInfoText: String {
+        let value = model.limitedInfo?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? "非限定" : value
     }
 }
 
@@ -1813,6 +1820,7 @@ private struct CollectionTabView: View {
             .navigationTitle("我的藏品")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: mode == .cards ? "搜索已收藏模型" : "搜索")
+            .keyboardType(.asciiCapable)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled(true)
         }
@@ -3184,6 +3192,8 @@ private enum ProductCSVLoader {
             let brandName = nonEmpty(field("品牌", in: row, indexes: indexes), fallback: "未录入品牌")
             let categoryName = nonEmpty(field("分类", in: row, indexes: indexes), fallback: "未分类")
             let statusText = field("发行状态", in: row, indexes: indexes)
+            let limitedInfo = nonEmpty(field("限定信息", in: row, indexes: indexes), fallback: "非限定")
+            let storyText = nonEmpty(field("故事", in: row, indexes: indexes), fallback: "暂无故事记录。")
 
             let brandId = brandIdByName[brandName] ?? {
                 let id = brands.count + 1
@@ -3208,7 +3218,8 @@ private enum ProductCSVLoader {
                 name: name,
                 brandId: brandId,
                 categoryId: categoryId,
-                story: "来自 products.csv 的产品记录。编号 \(number)，发行状态 \(status.title)，分类 \(categoryName)。",
+                story: storyText,
+                limitedInfo: limitedInfo,
                 releaseYear: nil,
                 scale: "1:64",
                 modelNumber: number,
