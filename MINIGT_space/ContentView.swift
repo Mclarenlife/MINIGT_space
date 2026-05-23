@@ -6,6 +6,7 @@ import UIKit
 struct ContentView: View {
     @StateObject private var store = CollectionStore()
     @AppStorage("minigt.selectedTheme") private var selectedThemeRaw = AppTheme.system.rawValue
+    @AppStorage("minigt.selectedAccentColor") private var selectedAccentColorRaw = AppAccentColor.mclarenPapaya.rawValue
     @AppStorage("minigt.completedOnboardingInstallMarker") private var completedOnboardingInstallMarker = ""
     @AppStorage("minigt.keyboardWarmupInstallMarker") private var keyboardWarmupInstallMarker = ""
     @State private var isShowingInitialization = false
@@ -13,6 +14,10 @@ struct ContentView: View {
 
     private var selectedTheme: AppTheme {
         AppTheme(rawValue: selectedThemeRaw) ?? .system
+    }
+
+    private var selectedAccentColor: AppAccentColor {
+        AppAccentColor(rawValue: selectedAccentColorRaw) ?? .mclarenPapaya
     }
 
     private var needsOnboarding: Bool {
@@ -46,9 +51,9 @@ struct ContentView: View {
             .animation(.easeInOut(duration: 0.22), value: isShowingInitialization)
             .animation(.easeInOut(duration: 0.22), value: needsOnboarding)
             .environmentObject(store)
-            .environment(\.themeContext, ThemeContext(theme: selectedTheme))
+            .environment(\.themeContext, ThemeContext(theme: selectedTheme, accentColor: selectedAccentColor))
             .preferredColorScheme(selectedTheme.preferredColorScheme)
-            .tint(selectedTheme.palette.accent)
+            .tint(selectedAccentColor.color)
             .task {
                 guard hasRequestedCatalogLoad == false else { return }
                 hasRequestedCatalogLoad = true
@@ -729,6 +734,21 @@ final class CollectionStore: ObservableObject {
         return (owned, categoryModels.count, Self.ratio(owned, categoryModels.count))
     }
 
+    func progressForSelection(brandId: Int?, categoryId: Int?) -> (owned: Int, total: Int, progress: Double) {
+        let categoryIds = categoryId.map { descendantCategoryIds(from: $0) }
+        let selectedModels = releasedModels
+            .filter { model in
+                guard let brandId else { return true }
+                return model.brandId == brandId
+            }
+            .filter { model in
+                guard let categoryIds else { return true }
+                return categoryIds.contains(model.categoryId)
+            }
+        let owned = selectedModels.filter { collections[$0.id] != nil }.count
+        return (owned, selectedModels.count, Self.ratio(owned, selectedModels.count))
+    }
+
     func uncollectedModelsForBrand(_ brand: MiniGTBrand) -> [MiniGTModel] {
         releasedModels.filter { $0.brandId == brand.id && collections[$0.id] == nil }
     }
@@ -930,28 +950,24 @@ final class CollectionStore: ObservableObject {
 
 enum AppTheme: String, CaseIterable, Identifiable {
     case system
-    case lightMinimal
-    case darkMinimal
-    case darkRacing
-    case garage
+    case light
+    case dark
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .system: "跟随系统"
-        case .lightMinimal: "极简白卡风"
-        case .darkMinimal: "极简黑卡风"
-        case .darkRacing: "暗黑赛车风"
-        case .garage: "车库工业风"
+        case .light: "浅色"
+        case .dark: "深色"
         }
     }
 
     var preferredColorScheme: ColorScheme? {
         switch self {
         case .system: nil
-        case .lightMinimal: .light
-        case .darkMinimal, .darkRacing, .garage: .dark
+        case .light: .light
+        case .dark: .dark
         }
     }
 
@@ -964,60 +980,64 @@ enum AppTheme: String, CaseIterable, Identifiable {
                 elevated: Color(.tertiarySystemBackground),
                 primaryText: Color(.label),
                 secondaryText: Color(.secondaryLabel),
-                accent: Color(hex: "#D6A642"),
+                accent: AppAccentColor.mclarenPapaya.color,
                 success: Color(hex: "#30C86A"),
                 warning: Color(hex: "#F39A32"),
                 danger: Color(hex: "#FF4D4F")
             )
-        case .lightMinimal:
+        case .light:
             AppPalette(
                 background: Color(hex: "#F6F7F9"),
                 surface: .white,
                 elevated: Color(hex: "#ECEFF3"),
                 primaryText: Color(hex: "#111318"),
                 secondaryText: Color(hex: "#667085"),
-                accent: Color(hex: "#B8842F"),
+                accent: AppAccentColor.mclarenPapaya.color,
                 success: Color(hex: "#1F9D55"),
                 warning: Color(hex: "#E17A20"),
                 danger: Color(hex: "#D92D20")
             )
-        case .darkMinimal:
+        case .dark:
             AppPalette(
                 background: Color(hex: "#0F1115"),
                 surface: Color(hex: "#181B21"),
                 elevated: Color(hex: "#242832"),
                 primaryText: Color(hex: "#F4F6F8"),
                 secondaryText: Color(hex: "#A4ACB9"),
-                accent: Color(hex: "#D6A642"),
+                accent: AppAccentColor.mclarenPapaya.color,
                 success: Color(hex: "#38D46D"),
                 warning: Color(hex: "#F5A524"),
                 danger: Color(hex: "#FF6266")
             )
-        case .darkRacing:
-            AppPalette(
-                background: Color(hex: "#090A0C"),
-                surface: Color(hex: "#15171C"),
-                elevated: Color(hex: "#22262E"),
-                primaryText: Color(hex: "#F7F8FA"),
-                secondaryText: Color(hex: "#A8B0BC"),
-                accent: Color(hex: "#E63B2E"),
-                success: Color(hex: "#2FD076"),
-                warning: Color(hex: "#F7B955"),
-                danger: Color(hex: "#FF4D4F")
-            )
-        case .garage:
-            AppPalette(
-                background: Color(hex: "#11100E"),
-                surface: Color(hex: "#1D1A16"),
-                elevated: Color(hex: "#2A251E"),
-                primaryText: Color(hex: "#F2EEE7"),
-                secondaryText: Color(hex: "#B5A999"),
-                accent: Color(hex: "#D09343"),
-                success: Color(hex: "#6AC17B"),
-                warning: Color(hex: "#F0A33A"),
-                danger: Color(hex: "#EE5D4E")
-            )
         }
+    }
+}
+
+enum AppAccentColor: String, CaseIterable, Identifiable {
+    case mclarenPapaya
+    case redBullNavy
+    case ferrariRed
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .mclarenPapaya: "迈凯伦木瓜橙"
+        case .redBullNavy: "红牛深蓝"
+        case .ferrariRed: "法拉利红"
+        }
+    }
+
+    var hex: String {
+        switch self {
+        case .mclarenPapaya: "#FF8000"
+        case .redBullNavy: "#001E60"
+        case .ferrariRed: "#DC0000"
+        }
+    }
+
+    var color: Color {
+        Color(hex: hex)
     }
 }
 
@@ -1035,11 +1055,17 @@ struct AppPalette {
 
 struct ThemeContext {
     var theme: AppTheme
-    var palette: AppPalette { theme.palette }
+    var accentColor: AppAccentColor
+
+    var palette: AppPalette {
+        var palette = theme.palette
+        palette.accent = accentColor.color
+        return palette
+    }
 }
 
 private struct ThemeContextKey: EnvironmentKey {
-    static let defaultValue = ThemeContext(theme: .system)
+    static let defaultValue = ThemeContext(theme: .system, accentColor: .mclarenPapaya)
 }
 
 extension EnvironmentValues {
@@ -1093,6 +1119,14 @@ private enum LibrarySortOrder: String, CaseIterable, Identifiable {
     }
 }
 
+private struct ProgressDisplaySummary {
+    var title: String
+    var detail: String
+    var progress: Double
+    var owned: Int
+    var total: Int
+}
+
 private struct LibraryView: View {
     @EnvironmentObject private var store: CollectionStore
     @Environment(\.themeContext) private var theme
@@ -1101,6 +1135,8 @@ private struct LibraryView: View {
     @State private var selectedCategoryId: Int?
     @State private var layout: LibraryLayout = .grid
     @State private var sortOrder: LibrarySortOrder = .descending
+    @State private var selectedProgressBrandId: Int?
+    @State private var selectedProgressCategoryId: Int?
     @State private var showsFilters = false
     @State private var glowModelId: Int?
 
@@ -1116,11 +1152,9 @@ private struct LibraryView: View {
 
                 ScrollView {
                     VStack(spacing: 16) {
-                        LibraryHeader(
-                            total: store.models.count,
-                            collected: store.collectedModels.count,
-                            progress: store.overallProgress
-                        )
+                        LibraryHeader(summary: selectedProgress) {
+                            progressSelectionMenu
+                        }
 
                         FilterSummary(
                             brand: store.brands.first { $0.id == selectedBrandId }?.name,
@@ -1202,43 +1236,212 @@ private struct LibraryView: View {
         selectedBrandId = nil
         selectedCategoryId = nil
     }
-}
 
-private struct LibraryHeader: View {
-    @Environment(\.themeContext) private var theme
-    var total: Int
-    var collected: Int
-    var progress: Double
+    private var progressSelectionMenu: some View {
+        Menu {
+            Button {
+                selectedProgressBrandId = nil
+                selectedProgressCategoryId = nil
+            } label: {
+                Label("总进度", systemImage: selectedProgressBrandId == nil && selectedProgressCategoryId == nil ? "checkmark" : "chart.pie")
+            }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("收藏进度")
-                        .font(.caption)
-                        .foregroundStyle(theme.palette.secondaryText)
-                    Text("\(collected) / \(total)")
-                        .font(.system(.largeTitle, design: .rounded).weight(.bold))
-                        .foregroundStyle(theme.palette.primaryText)
+            Section("品牌") {
+                Button {
+                    selectedProgressBrandId = nil
+                } label: {
+                    Label("全部品牌", systemImage: selectedProgressBrandId == nil ? "checkmark" : "tag")
                 }
 
-                Spacer()
-
-                ProgressRing(progress: progress, lineWidth: 8)
-                    .frame(width: 72, height: 72)
+                ForEach(store.brands.sorted { $0.sortOrder < $1.sortOrder }) { brand in
+                    Button {
+                        selectedProgressBrandId = brand.id
+                    } label: {
+                        Label(brand.name, systemImage: isSelectedProgressBrand(brand) ? "checkmark" : "tag")
+                    }
+                }
             }
 
-            HStack(spacing: 8) {
-                StatusPill(title: "已点亮 \(collected)", color: theme.palette.accent, symbolName: "sparkles")
-                StatusPill(title: "待收 \(max(total - collected, 0))", color: theme.palette.secondaryText, symbolName: "circle")
+            Section("分类") {
+                Button {
+                    selectedProgressCategoryId = nil
+                } label: {
+                    Label("全部分类", systemImage: selectedProgressCategoryId == nil ? "checkmark" : "square.grid.2x2")
+                }
+
+                ForEach(categoryDisplayRows) { row in
+                    Button {
+                        selectedProgressCategoryId = row.category.id
+                    } label: {
+                        Label(categoryMenuTitle(for: row), systemImage: isSelectedProgressCategory(row.category) ? "checkmark" : "square.grid.2x2")
+                    }
+                }
             }
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.headline)
+                .foregroundStyle(theme.palette.accent)
+                .frame(width: 36, height: 36)
+                .background(theme.palette.surface.opacity(0.9), in: Circle())
         }
-        .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityLabel("设置收藏进度")
+    }
+
+    private var selectedProgress: ProgressDisplaySummary {
+        let brand = selectedProgressBrand
+        let category = selectedProgressCategory
+        guard brand != nil || category != nil else { return overallProgressSummary }
+
+        let progress = store.progressForSelection(brandId: brand?.id, categoryId: category?.id)
+        return ProgressDisplaySummary(
+            title: progressTitle(brand: brand, category: category),
+            detail: progressDetail(brand: brand, category: category),
+            progress: progress.progress,
+            owned: progress.owned,
+            total: progress.total
+        )
+    }
+
+    private func progressTitle(brand: MiniGTBrand?, category: MiniGTCategory?) -> String {
+        switch (brand, category) {
+        case let (brand?, category?):
+            return "\(brand.name) · \(category.name)"
+        case let (brand?, nil):
+            return brand.name
+        case let (nil, category?):
+            return category.name
+        default:
+            return "总进度"
+        }
+    }
+
+    private func progressDetail(brand: MiniGTBrand?, category: MiniGTCategory?) -> String {
+        switch (brand, category) {
+        case (_?, _?):
+            return "品牌 · 分类细分"
+        case (_?, nil):
+            return "品牌收藏进度"
+        case (nil, _?):
+            return "分类收藏进度"
+        default:
+            return "全部已发布模型"
+        }
+    }
+
+    private var overallProgressSummary: ProgressDisplaySummary {
+        let releasedCollected = store.releasedModels.filter { store.isCollected($0) }.count
+        return ProgressDisplaySummary(
+            title: "总进度",
+            detail: "全部已发布模型",
+            progress: store.overallProgress,
+            owned: releasedCollected,
+            total: store.releasedModels.count
+        )
+    }
+
+    private var selectedProgressBrand: MiniGTBrand? {
+        guard let selectedProgressBrandId else { return nil }
+        return store.brands.first { $0.id == selectedProgressBrandId }
+    }
+
+    private var selectedProgressCategory: MiniGTCategory? {
+        guard let selectedProgressCategoryId else { return nil }
+        return store.categories.first { $0.id == selectedProgressCategoryId }
+    }
+
+    private func isSelectedProgressBrand(_ brand: MiniGTBrand) -> Bool {
+        selectedProgressBrandId == brand.id
+    }
+
+    private func isSelectedProgressCategory(_ category: MiniGTCategory) -> Bool {
+        selectedProgressCategoryId == category.id
+    }
+
+    private func categoryMenuTitle(for row: CategoryDisplayRow) -> String {
+        String(repeating: "  ", count: Int(row.indent / 16)) + row.category.name
+    }
+
+    private var categoryDisplayRows: [CategoryDisplayRow] {
+        var rows: [CategoryDisplayRow] = []
+        for category in store.rootCategories() {
+            appendCategory(category, indent: 0, rows: &rows)
+        }
+        return rows
+    }
+
+    private func appendCategory(_ category: MiniGTCategory, indent: CGFloat, rows: inout [CategoryDisplayRow]) {
+        rows.append(CategoryDisplayRow(category: category, indent: indent))
+        for child in store.descendants(of: category) {
+            appendCategory(child, indent: indent + 16, rows: &rows)
+        }
+    }
+}
+
+private struct LibraryHeader<ProgressControl: View>: View {
+    @Environment(\.themeContext) private var theme
+    var summary: ProgressDisplaySummary
+    @ViewBuilder var progressControl: ProgressControl
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(theme.palette.surface)
+
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(theme.palette.accent.opacity(0.22))
+                        .frame(width: max(0, proxy.size.width * clampedProgress))
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("收藏进度")
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(theme.palette.primaryText)
+
+                    Text("\(summary.owned) / \(summary.total)")
+                        .font(.system(.title2, design: .rounded).weight(.bold))
+                        .foregroundStyle(theme.palette.accent)
+                        .minimumScaleFactor(0.75)
+
+                    Spacer(minLength: 44)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(summary.title)
+                        .font(.headline)
+                        .foregroundStyle(theme.palette.primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+
+                    Text(summary.detail)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(theme.palette.secondaryText)
+                }
+
+                HStack(spacing: 8) {
+                    StatusPill(title: "已收藏 \(summary.owned)", color: theme.palette.accent, symbolName: "sparkles")
+                    StatusPill(title: "待收 \(max(summary.total - summary.owned, 0))", color: theme.palette.secondaryText, symbolName: "circle")
+                }
+                .padding(.trailing, 48)
+            }
+            .padding(16)
+
+            progressControl
+                .padding(12)
+        }
+        .frame(maxWidth: .infinity, minHeight: 136, alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(theme.palette.elevated.opacity(0.75), lineWidth: 1)
         )
+    }
+
+    private var clampedProgress: Double {
+        min(max(summary.progress, 0), 1)
     }
 }
 
@@ -1420,14 +1623,14 @@ private struct ModelCard: View {
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(isCollected ? theme.palette.accent.opacity(0.55) : theme.palette.elevated, lineWidth: 1)
+        .background {
+            if isCollected || isGlowing {
+                CardGlowOverlay(color: theme.palette.accent, isActive: isGlowing)
+            }
         }
         .overlay {
-            if isGlowing || isCollected {
-                GlowOverlay(isActive: isGlowing)
-            }
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(theme.palette.elevated.opacity(isCollected ? 0.62 : 1), lineWidth: 1)
         }
     }
 }
@@ -2425,6 +2628,7 @@ private struct SettingsView: View {
     @EnvironmentObject private var store: CollectionStore
     @Environment(\.themeContext) private var theme
     @AppStorage("minigt.selectedTheme") private var selectedThemeRaw = AppTheme.system.rawValue
+    @AppStorage("minigt.selectedAccentColor") private var selectedAccentColorRaw = AppAccentColor.mclarenPapaya.rawValue
     @State private var showsExport = false
     @State private var showsImporter = false
     @State private var showsHelp = false
@@ -2434,10 +2638,22 @@ private struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("主题配色") {
-                    Picker("主题", selection: $selectedThemeRaw) {
+                Section("外观") {
+                    Picker("模式", selection: $selectedThemeRaw) {
                         ForEach(AppTheme.allCases) { theme in
                             Text(theme.title).tag(theme.rawValue)
+                        }
+                    }
+
+                    Picker("主题色", selection: $selectedAccentColorRaw) {
+                        ForEach(AppAccentColor.allCases) { accentColor in
+                            HStack {
+                                Circle()
+                                    .fill(accentColor.color)
+                                    .frame(width: 14, height: 14)
+                                Text(accentColor.title)
+                            }
+                            .tag(accentColor.rawValue)
                         }
                     }
                 }
@@ -2968,7 +3184,35 @@ private struct StatusPill: View {
     }
 }
 
+private struct CardGlowOverlay: View {
+    var color: Color
+    var isActive: Bool
+    @State private var animate = false
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(color.opacity(isActive ? (animate ? 0.2 : 0.12) : 0.14))
+                .blur(radius: isActive ? (animate ? 13 : 8) : 9)
+                .padding(isActive ? (animate ? -8 : -4) : -5)
+
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(color.opacity(isActive ? (animate ? 0.18 : 0.34) : 0.24), lineWidth: 4)
+                .blur(radius: isActive ? (animate ? 8 : 4) : 6)
+                .padding(isActive ? (animate ? -7 : -3) : -4)
+        }
+        .allowsHitTesting(false)
+        .onAppear {
+            guard isActive else { return }
+            withAnimation(.easeOut(duration: 1.15)) {
+                animate = true
+            }
+        }
+    }
+}
+
 private struct GlowOverlay: View {
+    @Environment(\.themeContext) private var theme
     var isActive: Bool
     @State private var animate = false
 
@@ -2976,7 +3220,7 @@ private struct GlowOverlay: View {
         ZStack {
             ForEach(0..<3) { index in
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color(hex: "#FFD166").opacity(animate ? 0 : 0.72), lineWidth: 2)
+                    .stroke(theme.palette.accent.opacity(animate ? 0 : 0.72), lineWidth: 2)
                     .scaleEffect(animate ? 1.18 + CGFloat(index) * 0.12 : 0.92)
                     .animation(
                         .easeOut(duration: 1.2).delay(Double(index) * 0.12),
