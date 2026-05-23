@@ -2,11 +2,15 @@ import SwiftUI
 import Combine
 import UniformTypeIdentifiers
 import UIKit
+import PhotosUI
 
 struct ContentView: View {
     @StateObject private var store = CollectionStore()
     @AppStorage("minigt.selectedTheme") private var selectedThemeRaw = AppTheme.system.rawValue
     @AppStorage("minigt.selectedAccentColor") private var selectedAccentColorRaw = AppAccentColor.mclarenPapaya.rawValue
+    @AppStorage("minigt.selectedVisualStyle") private var selectedVisualStyleRaw = AppVisualStyle.glass.rawValue
+    @AppStorage("minigt.selectedBackgroundImage") private var selectedBackgroundImageID = AppBackgroundLibrary.defaultID
+    @AppStorage("minigt.uploadedBackgroundVersion") private var uploadedBackgroundVersion = ""
     @AppStorage("minigt.completedOnboardingInstallMarker") private var completedOnboardingInstallMarker = ""
     @AppStorage("minigt.keyboardWarmupInstallMarker") private var keyboardWarmupInstallMarker = ""
     @State private var isShowingInitialization = false
@@ -18,6 +22,10 @@ struct ContentView: View {
 
     private var selectedAccentColor: AppAccentColor {
         AppAccentColor(rawValue: selectedAccentColorRaw) ?? .mclarenPapaya
+    }
+
+    private var selectedVisualStyle: AppVisualStyle {
+        AppVisualStyle(rawValue: selectedVisualStyleRaw) ?? .glass
     }
 
     private var needsOnboarding: Bool {
@@ -51,7 +59,7 @@ struct ContentView: View {
             .animation(.easeInOut(duration: 0.22), value: isShowingInitialization)
             .animation(.easeInOut(duration: 0.22), value: needsOnboarding)
             .environmentObject(store)
-            .environment(\.themeContext, ThemeContext(theme: selectedTheme, accentColor: selectedAccentColor))
+            .environment(\.themeContext, ThemeContext(theme: selectedTheme, accentColor: selectedAccentColor, visualStyle: selectedVisualStyle, backgroundImageID: selectedBackgroundImageID, uploadedBackgroundVersion: uploadedBackgroundVersion))
             .preferredColorScheme(selectedTheme.preferredColorScheme)
             .tint(selectedAccentColor.color)
             .task {
@@ -478,6 +486,24 @@ struct PersistedAppState: Codable, Sendable {
     var collections: [CollectionEntry]
     var scenes: [DisplayScene]
     var placements: [ScenePlacement]
+    var wishlistModelIds: [Int]
+
+    init(catalog: CatalogData, collections: [CollectionEntry], scenes: [DisplayScene], placements: [ScenePlacement], wishlistModelIds: [Int] = []) {
+        self.catalog = catalog
+        self.collections = collections
+        self.scenes = scenes
+        self.placements = placements
+        self.wishlistModelIds = wishlistModelIds
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        catalog = try container.decode(CatalogData.self, forKey: .catalog)
+        collections = try container.decode([CollectionEntry].self, forKey: .collections)
+        scenes = try container.decode([DisplayScene].self, forKey: .scenes)
+        placements = try container.decode([ScenePlacement].self, forKey: .placements)
+        wishlistModelIds = try container.decodeIfPresent([Int].self, forKey: .wishlistModelIds) ?? []
+    }
 }
 
 private struct InitialStoreState: Sendable {
@@ -485,6 +511,7 @@ private struct InitialStoreState: Sendable {
     var scenes: [DisplayScene]
     var collections: [Int: CollectionEntry]
     var placements: [ScenePlacement]
+    var wishlistModelIds: Set<Int>
 
     nonisolated static func load(storageURL: URL, fallbackCatalog: CatalogData, fallbackScenes: [DisplayScene]) -> InitialStoreState {
         let catalog = ProductCatalogRemoteSource.loadCachedCatalog() ?? ProductCSVLoader.loadBundledCatalog() ?? fallbackCatalog
@@ -493,7 +520,8 @@ private struct InitialStoreState: Sendable {
                 catalog: catalog,
                 scenes: fallbackScenes,
                 collections: [:],
-                placements: []
+                placements: [],
+                wishlistModelIds: []
             )
         }
 
@@ -503,12 +531,14 @@ private struct InitialStoreState: Sendable {
             result[entry.modelId] = entry
         }
         let placements = snapshot.placements.filter { modelIds.contains($0.modelId) }
+        let wishlistModelIds = Set(snapshot.wishlistModelIds.filter { modelIds.contains($0) })
 
         return InitialStoreState(
             catalog: catalog,
             scenes: snapshot.scenes.isEmpty ? fallbackScenes : snapshot.scenes,
             collections: collections,
-            placements: placements
+            placements: placements,
+            wishlistModelIds: wishlistModelIds
         )
     }
 }
@@ -558,6 +588,9 @@ final class CollectionStore: ObservableObject {
     @Published var placements: [ScenePlacement] {
         didSet { persistIfReady() }
     }
+    @Published var wishlistModelIds: Set<Int> {
+        didSet { persistIfReady() }
+    }
 
     private let storageURL: URL
     private var isReadyToPersist = false
@@ -575,6 +608,7 @@ final class CollectionStore: ObservableObject {
         scenes = SeedCatalog.scenes
         collections = [:]
         placements = []
+        wishlistModelIds = []
         isCatalogLoading = false
         catalogLoadingProgress = 0
     }
@@ -609,6 +643,7 @@ final class CollectionStore: ObservableObject {
         scenes = initialState.scenes
         collections = initialState.collections
         placements = initialState.placements
+        wishlistModelIds = initialState.wishlistModelIds
 
         isReadyToPersist = true
         progressTask?.cancel()
@@ -655,6 +690,10 @@ final class CollectionStore: ObservableObject {
         models.filter { collections[$0.id] != nil }
     }
 
+    var wantedModels: [MiniGTModel] {
+        models.filter { wishlistModelIds.contains($0.id) }
+    }
+
     var totalSpent: Double {
         collections.values.compactMap(\.price).reduce(0, +)
     }
@@ -681,13 +720,26 @@ final class CollectionStore: ObservableObject {
         collections[model.id] != nil
     }
 
+    func isWanted(_ model: MiniGTModel) -> Bool {
+        wishlistModelIds.contains(model.id)
+    }
+
     func collect(_ entry: CollectionEntry) {
         collections[entry.modelId] = entry
+        wishlistModelIds.remove(entry.modelId)
     }
 
     func removeCollection(modelId: Int) {
         collections.removeValue(forKey: modelId)
         placements.removeAll { $0.modelId == modelId }
+    }
+
+    func toggleWanted(_ model: MiniGTModel) {
+        if wishlistModelIds.contains(model.id) {
+            wishlistModelIds.remove(model.id)
+        } else {
+            wishlistModelIds.insert(model.id)
+        }
     }
 
     func models(matching query: String, brandId: Int?, categoryId: Int?, includeUpcoming: Bool = true, onlyCollected: Bool = false) -> [MiniGTModel] {
@@ -818,6 +870,7 @@ final class CollectionStore: ObservableObject {
             scenes = snapshot.scenes
             collections = Dictionary(uniqueKeysWithValues: snapshot.collections.map { ($0.modelId, $0) })
             placements = snapshot.placements
+            wishlistModelIds = Set(snapshot.wishlistModelIds)
             save()
             return
         }
@@ -842,6 +895,15 @@ final class CollectionStore: ObservableObject {
         refreshCatalogFromOSSIfNeeded(force: true, delay: 0)
     }
 
+    func refreshCatalogFromOSSForUser() async -> Bool {
+        catalogRefreshTask?.cancel()
+        guard let refreshedCatalog = await ProductCatalogRemoteSource.fetchRemoteCatalog() else {
+            return false
+        }
+        applyRemoteCatalog(refreshedCatalog)
+        return true
+    }
+
     func resetDemoData() {
         let catalog = ProductCatalogRemoteSource.loadCachedCatalog() ?? Self.loadBundledCatalog()
         isReadyToPersist = false
@@ -849,6 +911,7 @@ final class CollectionStore: ObservableObject {
         scenes = SeedCatalog.scenes
         collections = [:]
         placements = []
+        wishlistModelIds = []
         isReadyToPersist = true
         save()
         refreshCatalogFromOSSIfNeeded(force: true, delay: 0)
@@ -881,6 +944,7 @@ final class CollectionStore: ObservableObject {
         models = catalog.models
         collections = collections.filter { modelIds.contains($0.key) }
         placements = placements.filter { modelIds.contains($0.modelId) }
+        wishlistModelIds = wishlistModelIds.filter { modelIds.contains($0) }
     }
 
     private func descendantCategoryIds(from id: Int) -> Set<Int> {
@@ -931,7 +995,8 @@ final class CollectionStore: ObservableObject {
             catalog: CatalogData(brands: brands, categories: categories, models: models),
             collections: collections.values.sorted { $0.modelId < $1.modelId },
             scenes: scenes,
-            placements: placements
+            placements: placements,
+            wishlistModelIds: wishlistModelIds.sorted()
         )
     }
 
@@ -1041,6 +1106,124 @@ enum AppAccentColor: String, CaseIterable, Identifiable {
     }
 }
 
+enum AppVisualStyle: String, CaseIterable, Identifiable {
+    case tint
+    case glass
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .tint: "色调"
+        case .glass: "玻璃"
+        }
+    }
+}
+
+private struct AppBackgroundOption: Identifiable, Hashable {
+    var id: String
+    var title: String
+    var url: URL?
+
+    var isDefault: Bool {
+        id == AppBackgroundLibrary.defaultID
+    }
+
+    var isUpload: Bool {
+        id == AppBackgroundLibrary.uploadedID
+    }
+}
+
+private enum AppBackgroundLibrary {
+    static let defaultID = "default"
+    static let uploadedID = "uploaded"
+    private static let folderName = "background"
+    private static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "webp"]
+
+    static var options: [AppBackgroundOption] {
+        [defaultOption, uploadOption] + bundledImageOptions()
+    }
+
+    static func imageURL(for id: String) -> URL? {
+        guard id != defaultID else { return nil }
+        if id == uploadedID {
+            return FileManager.default.fileExists(atPath: uploadedImageURL.path) ? uploadedImageURL : nil
+        }
+        return bundledImageURLs().first { $0.lastPathComponent == id }
+    }
+
+    static func image(for id: String) -> UIImage? {
+        guard let url = imageURL(for: id) else { return nil }
+        return UIImage(contentsOfFile: url.path)
+    }
+
+    static func saveUploadedImage(_ image: UIImage) -> Bool {
+        do {
+            try ensureUploadDirectory()
+            guard let data = image.jpegData(compressionQuality: 0.9) else { return false }
+            try data.write(to: uploadedImageURL, options: [.atomic])
+            return true
+        } catch {
+            print("Failed to save uploaded background: \(error)")
+            return false
+        }
+    }
+
+    private static var defaultOption: AppBackgroundOption {
+        AppBackgroundOption(id: defaultID, title: "默认背景", url: nil)
+    }
+
+    private static var uploadOption: AppBackgroundOption {
+        AppBackgroundOption(id: uploadedID, title: "上传图片", url: imageURL(for: uploadedID))
+    }
+
+    private static func bundledImageOptions() -> [AppBackgroundOption] {
+        bundledImageURLs().map { url in
+            AppBackgroundOption(
+                id: url.lastPathComponent,
+                title: url.deletingPathExtension().lastPathComponent,
+                url: url
+            )
+        }
+    }
+
+    private static func bundledImageURLs() -> [URL] {
+        var urls: [URL] = []
+        let fileManager = FileManager.default
+
+        if let resourceURL = Bundle.main.resourceURL {
+            let backgroundURL = resourceURL.appendingPathComponent(folderName, isDirectory: true)
+            urls.append(contentsOf: imageURLs(in: backgroundURL, fileManager: fileManager))
+            urls.append(contentsOf: imageURLs(in: resourceURL, fileManager: fileManager))
+        }
+
+        return Array(Set(urls))
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    private static func imageURLs(in directory: URL, fileManager: FileManager) -> [URL] {
+        guard let contents = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+            return []
+        }
+
+        return contents.filter { imageExtensions.contains($0.pathExtension.lowercased()) }
+    }
+
+    private static var uploadDirectory: URL {
+        let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        return (applicationSupport ?? URL(fileURLWithPath: NSTemporaryDirectory()))
+            .appendingPathComponent("MINIGTBackgrounds", isDirectory: true)
+    }
+
+    private static var uploadedImageURL: URL {
+        uploadDirectory.appendingPathComponent("uploaded_background.jpg")
+    }
+
+    private static func ensureUploadDirectory() throws {
+        try FileManager.default.createDirectory(at: uploadDirectory, withIntermediateDirectories: true)
+    }
+}
+
 struct AppPalette {
     var background: Color
     var surface: Color
@@ -1056,6 +1239,9 @@ struct AppPalette {
 struct ThemeContext {
     var theme: AppTheme
     var accentColor: AppAccentColor
+    var visualStyle: AppVisualStyle = .glass
+    var backgroundImageID: String = AppBackgroundLibrary.defaultID
+    var uploadedBackgroundVersion: String = ""
 
     var palette: AppPalette {
         var palette = theme.palette
@@ -1065,13 +1251,94 @@ struct ThemeContext {
 }
 
 private struct ThemeContextKey: EnvironmentKey {
-    static let defaultValue = ThemeContext(theme: .system, accentColor: .mclarenPapaya)
+    static let defaultValue = ThemeContext(theme: .system, accentColor: .mclarenPapaya, visualStyle: .glass)
 }
 
 extension EnvironmentValues {
     var themeContext: ThemeContext {
         get { self[ThemeContextKey.self] }
         set { self[ThemeContextKey.self] = newValue }
+    }
+}
+
+private struct AppBackgroundView: View {
+    @Environment(\.themeContext) private var theme
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                if let image = AppBackgroundLibrary.image(for: theme.backgroundImageID) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+                        .id("\(theme.backgroundImageID)-\(theme.uploadedBackgroundVersion)")
+
+                    backgroundOverlay
+                } else {
+                    theme.palette.background
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+
+    private var backgroundOverlay: Color {
+        switch theme.theme {
+        case .dark:
+            return .black.opacity(0.18)
+        case .light:
+            return .white.opacity(0.08)
+        case .system:
+            return Color(.systemBackground).opacity(0.08)
+        }
+    }
+}
+
+private struct AppSurfaceBackground: View {
+    @Environment(\.themeContext) private var theme
+    var cornerRadius: CGFloat
+    var tintOpacity: Double = 0.08
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        if theme.visualStyle == .glass {
+            shape
+                .fill(.clear)
+                .glassEffect(.regular.tint(theme.palette.surface.opacity(tintOpacity)), in: shape)
+        } else {
+            shape
+                .fill(theme.palette.surface)
+        }
+    }
+}
+
+private struct AppSurfaceModifier: ViewModifier {
+    @Environment(\.themeContext) private var theme
+    var cornerRadius: CGFloat
+    var strokeOpacity: Double
+    var glassTintOpacity: Double
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        content
+            .background {
+                AppSurfaceBackground(cornerRadius: cornerRadius, tintOpacity: glassTintOpacity)
+            }
+            .overlay {
+                shape.stroke(theme.palette.elevated.opacity(strokeOpacity), lineWidth: 1)
+            }
+    }
+}
+
+private extension View {
+    func appSurface(cornerRadius: CGFloat = AppCorners.container, strokeOpacity: Double = 0.75, glassTintOpacity: Double = 0.08) -> some View {
+        modifier(AppSurfaceModifier(cornerRadius: cornerRadius, strokeOpacity: strokeOpacity, glassTintOpacity: glassTintOpacity))
     }
 }
 
@@ -1154,7 +1421,7 @@ private struct LibraryView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                theme.palette.background.ignoresSafeArea()
+                AppBackgroundView()
 
                 ScrollView {
                     VStack(spacing: 16) {
@@ -1392,13 +1659,13 @@ private struct LibraryHeader<ProgressControl: View>: View {
         ZStack(alignment: .bottomTrailing) {
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous)
-                        .fill(theme.palette.surface)
+                    AppSurfaceBackground(cornerRadius: AppCorners.container)
 
-                    RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous)
+                    Rectangle()
                         .fill(theme.palette.accent.opacity(0.22))
                         .frame(width: max(0, proxy.size.width * clampedProgress))
                 }
+                .clipShape(RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
             }
 
             VStack(alignment: .leading, spacing: 12) {
@@ -1629,16 +1896,12 @@ private struct ModelCard: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: AppCorners.productCard, style: .continuous))
         .background {
             if isCollected || isGlowing {
                 CardGlowOverlay(color: theme.palette.accent, isActive: isGlowing)
             }
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: AppCorners.productCard, style: .continuous)
-                .stroke(theme.palette.elevated.opacity(isCollected ? 0.62 : 1), lineWidth: 1)
-        }
+        .appSurface(cornerRadius: AppCorners.productCard, strokeOpacity: isCollected ? 0.62 : 1)
     }
 }
 
@@ -1673,7 +1936,7 @@ private struct ModelRow: View {
             }
         }
         .padding(10)
-        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .appSurface(cornerRadius: AppCorners.container)
     }
 }
 
@@ -1735,7 +1998,13 @@ private struct ModelDetailView: View {
                 }
 
                 if let collectionEntry {
-                    CollectionReceipt(entry: collectionEntry)
+                    Button {
+                        showsCollectionForm = true
+                    } label: {
+                        CollectionReceipt(entry: collectionEntry)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("编辑收藏记录")
                 }
             }
             .padding()
@@ -1755,20 +2024,33 @@ private struct ModelDetailView: View {
                     Label(store.isCollected(model) ? "取消点亮" : "点亮收藏", systemImage: store.isCollected(model) ? "xmark.circle" : "sparkles")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .controlSize(.large)
                 .tint(store.isCollected(model) ? theme.palette.danger : theme.palette.accent)
+
+                Button {
+                    store.toggleWanted(model)
+                } label: {
+                    Label(store.isWanted(model) ? "取消想要" : "标记想要", systemImage: store.isWanted(model) ? "heart.fill" : "heart")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glass)
+                .controlSize(.large)
+                .tint(store.isWanted(model) ? theme.palette.accent : theme.palette.secondaryText)
             }
-            .padding()
-            .background(.regularMaterial)
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
         }
         .sheet(isPresented: $showsCollectionForm) {
-            CollectionFormView(model: model) {
-                glowModelId = model.id
-                localGlow = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                    glowModelId = nil
-                    localGlow = false
+            CollectionFormView(model: model, existingEntry: collectionEntry) {
+                if collectionEntry == nil {
+                    glowModelId = model.id
+                    localGlow = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        glowModelId = nil
+                        localGlow = false
+                    }
                 }
             }
             .presentationDetents([.medium, .large])
@@ -1830,7 +2112,7 @@ private struct DetailInfoTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .appSurface(cornerRadius: AppCorners.container)
     }
 }
 
@@ -1851,7 +2133,7 @@ private struct CollectionReceipt: View {
             }
         }
         .padding(14)
-        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .appSurface(cornerRadius: AppCorners.container)
     }
 }
 
@@ -1880,6 +2162,7 @@ private struct CollectionFormView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.themeContext) private var theme
     var model: MiniGTModel
+    var existingEntry: CollectionEntry?
     var completion: () -> Void
 
     @State private var collectedDate = Date()
@@ -1887,6 +2170,17 @@ private struct CollectionFormView: View {
     @State private var channel: PurchaseChannel = .online
     @State private var isUnboxed = true
     @State private var hasDefect = false
+
+    init(model: MiniGTModel, existingEntry: CollectionEntry? = nil, completion: @escaping () -> Void) {
+        self.model = model
+        self.existingEntry = existingEntry
+        self.completion = completion
+        _collectedDate = State(initialValue: existingEntry?.collectedDate ?? Date())
+        _priceText = State(initialValue: existingEntry?.price.map { Self.priceText(for: $0) } ?? "")
+        _channel = State(initialValue: existingEntry?.channel ?? .online)
+        _isUnboxed = State(initialValue: existingEntry?.isUnboxed ?? true)
+        _hasDefect = State(initialValue: existingEntry?.hasDefect ?? false)
+    }
 
     var body: some View {
         NavigationStack {
@@ -1922,7 +2216,7 @@ private struct CollectionFormView: View {
             }
             .scrollContentBackground(.hidden)
             .background(theme.palette.background)
-            .navigationTitle("点亮收藏")
+            .navigationTitle(existingEntry == nil ? "点亮收藏" : "编辑收藏")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("取消") {
@@ -1930,7 +2224,7 @@ private struct CollectionFormView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("确认点亮") {
+                    Button(existingEntry == nil ? "确认点亮" : "保存") {
                         let price = Double(priceText.replacingOccurrences(of: ",", with: "."))
                         store.collect(CollectionEntry(
                             modelId: model.id,
@@ -1947,6 +2241,10 @@ private struct CollectionFormView: View {
                 }
             }
         }
+    }
+
+    private static func priceText(for value: Double) -> String {
+        value.rounded() == value ? String(Int(value)) : String(value)
     }
 }
 
@@ -1983,15 +2281,17 @@ private struct UpcomingModelsView: View {
 // MARK: - Collection Tab
 
 private enum CollectionMode: String, CaseIterable, Identifiable {
-    case cards
-    case scene
+    case owned
+    case wanted
+    case gallery
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .cards: "卡片"
-        case .scene: "展示"
+        case .owned: "我的"
+        case .wanted: "想要"
+        case .gallery: "展馆"
         }
     }
 }
@@ -1999,17 +2299,23 @@ private enum CollectionMode: String, CaseIterable, Identifiable {
 private struct CollectionTabView: View {
     @EnvironmentObject private var store: CollectionStore
     @Environment(\.themeContext) private var theme
-    @State private var mode: CollectionMode = .cards
+    @State private var mode: CollectionMode = .owned
     @State private var query = ""
 
-    private var models: [MiniGTModel] {
+    private var ownedModels: [MiniGTModel] {
         store.models(matching: query, brandId: nil, categoryId: nil, onlyCollected: true)
+    }
+
+    private var wantedModels: [MiniGTModel] {
+        let wantedIds = store.wishlistModelIds
+        return store.models(matching: query, brandId: nil, categoryId: nil)
+            .filter { wantedIds.contains($0.id) }
     }
 
     var body: some View {
         NavigationStack {
             ZStack {
-                theme.palette.background.ignoresSafeArea()
+                AppBackgroundView()
 
                 VStack(spacing: 14) {
                     Picker("藏品模式", selection: $mode) {
@@ -2020,25 +2326,36 @@ private struct CollectionTabView: View {
                     .pickerStyle(.segmented)
                     .padding(.horizontal)
 
-                    if mode == .cards {
-                        collectionGrid
-                    } else {
-                        SceneEditorView()
+                    switch mode {
+                    case .owned:
+                        ownedGrid
+                    case .wanted:
+                        wantedGrid
+                    case .gallery:
+                        galleryPlaceholder
                     }
                 }
             }
             .navigationTitle("我的藏品")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $query, prompt: mode == .cards ? "搜索已收藏模型" : "搜索")
+            .searchable(text: $query, prompt: searchPrompt)
             .keyboardType(.asciiCapable)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled(true)
         }
     }
 
-    private var collectionGrid: some View {
+    private var searchPrompt: String {
+        switch mode {
+        case .owned: "搜索已收藏模型"
+        case .wanted: "搜索想要模型"
+        case .gallery: "搜索展馆"
+        }
+    }
+
+    private var ownedGrid: some View {
         ScrollView {
-            if models.isEmpty {
+            if ownedModels.isEmpty {
                 EmptyStateView(
                     symbolName: "sparkles",
                     title: "还没有点亮的模型",
@@ -2047,7 +2364,7 @@ private struct CollectionTabView: View {
                 .padding(.top, 56)
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 164), spacing: 12)], spacing: 12) {
-                    ForEach(models) { model in
+                    ForEach(ownedModels) { model in
                         NavigationLink {
                             ModelDetailView(model: model, glowModelId: .constant(nil))
                         } label: {
@@ -2058,6 +2375,42 @@ private struct CollectionTabView: View {
                 }
                 .padding()
             }
+        }
+    }
+
+    private var wantedGrid: some View {
+        ScrollView {
+            if wantedModels.isEmpty {
+                EmptyStateView(
+                    symbolName: "heart",
+                    title: "还没有想要的模型",
+                    message: "从库里进入模型详情，标记想要后会出现在这里。"
+                )
+                .padding(.top, 56)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 164), spacing: 12)], spacing: 12) {
+                    ForEach(wantedModels) { model in
+                        NavigationLink {
+                            ModelDetailView(model: model, glowModelId: .constant(nil))
+                        } label: {
+                            ModelCard(model: model)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding()
+            }
+        }
+    }
+
+    private var galleryPlaceholder: some View {
+        ScrollView {
+            EmptyStateView(
+                symbolName: "building.columns",
+                title: "展馆暂未开放",
+                message: "这里会用于之后重构展示功能。"
+            )
+            .padding(.top, 56)
         }
     }
 }
@@ -2166,7 +2519,7 @@ private struct SceneEditorView: View {
                                         .lineLimit(1)
                                 }
                                 .padding(8)
-                                .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .appSurface(cornerRadius: AppCorners.container)
                             }
                             .buttonStyle(.plain)
                         }
@@ -2293,7 +2646,7 @@ private struct PlacementControls: View {
             }
         }
         .padding(12)
-        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .appSurface(cornerRadius: AppCorners.container)
         .onAppear {
             rotation = placement.rotation
             scale = placement.scale
@@ -2368,7 +2721,7 @@ private struct StatsView: View {
                 }
                 .padding()
             }
-            .background(theme.palette.background.ignoresSafeArea())
+            .background(AppBackgroundView())
             .navigationTitle("统计")
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -2653,7 +3006,7 @@ private struct StatTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
+        .appSurface(cornerRadius: AppCorners.container)
     }
 }
 
@@ -2693,7 +3046,7 @@ private struct ProgressSection<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
+        .appSurface(cornerRadius: AppCorners.container)
     }
 }
 
@@ -2757,11 +3110,17 @@ private struct SettingsView: View {
     @Environment(\.themeContext) private var theme
     @AppStorage("minigt.selectedTheme") private var selectedThemeRaw = AppTheme.system.rawValue
     @AppStorage("minigt.selectedAccentColor") private var selectedAccentColorRaw = AppAccentColor.mclarenPapaya.rawValue
+    @AppStorage("minigt.selectedVisualStyle") private var selectedVisualStyleRaw = AppVisualStyle.glass.rawValue
+    @AppStorage("minigt.selectedBackgroundImage") private var selectedBackgroundImageID = AppBackgroundLibrary.defaultID
     @State private var showsExport = false
     @State private var showsImporter = false
     @State private var showsHelp = false
+    @State private var showsAbout = false
+    @State private var showsBackgroundPicker = false
     @State private var showsClearConfirmation = false
     @State private var importError: String?
+    @State private var catalogUpdateAlert: CatalogUpdateAlert?
+    @State private var isCheckingCatalogUpdate = false
 
     var body: some View {
         NavigationStack {
@@ -2787,6 +3146,20 @@ private struct SettingsView: View {
                                 .tag(accentColor.rawValue)
                             }
                         }
+
+                        SettingsDivider()
+
+                        SettingsPickerRow(title: "样式", systemImage: "square.on.square", selection: $selectedVisualStyleRaw) {
+                            ForEach(AppVisualStyle.allCases) { visualStyle in
+                                Text(visualStyle.title).tag(visualStyle.rawValue)
+                            }
+                        }
+
+                        SettingsDivider()
+
+                        SettingsActionRow(title: "背景图片", systemImage: "photo.on.rectangle") {
+                            showsBackgroundPicker = true
+                        }
                     }
 
                     SettingsCardSection(title: "数据管理") {
@@ -2802,35 +3175,41 @@ private struct SettingsView: View {
 
                         SettingsDivider()
 
-                        SettingsActionRow(title: "检查产品表更新", systemImage: "arrow.counterclockwise") {
-                            store.refreshCatalogFromOSS()
+                        SettingsActionRow(title: isCheckingCatalogUpdate ? "正在检查产品表" : "检查产品表更新", systemImage: "arrow.counterclockwise") {
+                            checkCatalogUpdate()
                         }
+                        .disabled(isCheckingCatalogUpdate)
 
                         SettingsDivider()
 
                         SettingsActionRow(title: "清空所有收藏记录", systemImage: "trash", role: .destructive) {
                             showsClearConfirmation = true
                         }
-                    }
-
-                    SettingsCardSection(title: "帮助") {
-                        SettingsActionRow(title: "问题反馈", systemImage: "questionmark.circle") {
-                            showsHelp = true
+                        .confirmationDialog("清空所有收藏记录", isPresented: $showsClearConfirmation) {
+                            Button("确认清空", role: .destructive) {
+                                store.resetCollections()
+                            }
+                        } message: {
+                            Text("模型库会保留，只删除点亮、价格、渠道和场景摆放记录。")
                         }
                     }
 
-                    SettingsCardSection(title: "关于") {
-                        SettingsInfoRow(title: "App 版本", value: "1.0", systemImage: "info.circle")
+                    SettingsCardSection(title: "其他") {
+                        SettingsActionRow(title: "问题反馈", systemImage: "questionmark.circle") {
+                            showsHelp = true
+                        }
+
                         SettingsDivider()
-                        SettingsInfoRow(title: "模型数据来源", value: "本地手动维护", systemImage: "shippingbox")
-                        SettingsDivider()
-                        SettingsInfoRow(title: "数据存储", value: "沙盒 JSON", systemImage: "externaldrive")
+
+                        SettingsActionRow(title: "关于", systemImage: "info.circle") {
+                            showsAbout = true
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
-            .background(theme.palette.background.ignoresSafeArea())
+            .background(AppBackgroundView())
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showsExport) {
@@ -2840,6 +3219,15 @@ private struct SettingsView: View {
             .sheet(isPresented: $showsHelp) {
                 HelpSheet()
                     .presentationDetents([.height(260)])
+            }
+            .sheet(isPresented: $showsAbout) {
+                AboutSheet()
+                    .presentationDetents([.height(260)])
+            }
+            .sheet(isPresented: $showsBackgroundPicker) {
+                BackgroundPickerSheet(selectedBackgroundID: $selectedBackgroundImageID)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
             }
             .fileImporter(isPresented: $showsImporter, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
                 do {
@@ -2864,13 +3252,378 @@ private struct SettingsView: View {
             } message: {
                 Text(importError ?? "")
             }
-            .confirmationDialog("清空所有收藏记录", isPresented: $showsClearConfirmation) {
-                Button("确认清空", role: .destructive) {
-                    store.resetCollections()
-                }
-            } message: {
-                Text("模型库会保留，只删除点亮、价格、渠道和场景摆放记录。")
+            .alert(item: $catalogUpdateAlert) { alert in
+                Alert(
+                    title: Text(alert.title),
+                    message: Text(alert.message),
+                    dismissButton: .default(Text("好"))
+                )
             }
+        }
+    }
+
+    private func checkCatalogUpdate() {
+        guard isCheckingCatalogUpdate == false else { return }
+        isCheckingCatalogUpdate = true
+
+        Task {
+            let didUpdate = await store.refreshCatalogFromOSSForUser()
+            isCheckingCatalogUpdate = false
+            catalogUpdateAlert = didUpdate
+                ? CatalogUpdateAlert(title: "更新成功", message: "已正确读取 OSS 上的产品表，并刷新本地产品库。")
+                : CatalogUpdateAlert(title: "连接服务器失败", message: "暂时无法读取 OSS 上的产品表，请检查网络后稍后再试。")
+        }
+    }
+}
+
+private struct CatalogUpdateAlert: Identifiable {
+    let id = UUID()
+    var title: String
+    var message: String
+}
+
+private struct BackgroundCropPayload: Identifiable {
+    let id = UUID()
+    var image: UIImage
+}
+
+private struct BackgroundCropperView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.themeContext) private var theme
+    var sourceImage: UIImage
+    var completion: (UIImage) -> Void
+    var cancelAction: () -> Void
+
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    var body: some View {
+        GeometryReader { proxy in
+            let cropSize = cropSize(in: proxy.size)
+            let baseSize = baseImageSize(for: cropSize)
+
+            VStack(spacing: 18) {
+                HStack {
+                    Button("取消") {
+                        cancelAction()
+                        dismiss()
+                    }
+
+                    Spacer()
+
+                    Text("裁剪背景")
+                        .font(.headline)
+                        .foregroundStyle(theme.palette.primaryText)
+
+                    Spacer()
+
+                    Button("完成") {
+                        if let image = croppedImage(cropSize: cropSize, baseSize: baseSize) {
+                            completion(image)
+                        } else {
+                            cancelAction()
+                        }
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+
+                Spacer(minLength: 12)
+
+                cropArea(cropSize: cropSize, baseSize: baseSize)
+
+                Text("拖动图片调整位置，双指捏合缩放")
+                    .font(.footnote)
+                    .foregroundStyle(theme.palette.secondaryText)
+
+                Spacer(minLength: 18)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .background(theme.palette.background.ignoresSafeArea())
+        }
+    }
+
+    private func cropArea(cropSize: CGSize, baseSize: CGSize) -> some View {
+        let drag = DragGesture()
+            .onChanged { value in
+                let proposed = CGSize(
+                    width: lastOffset.width + value.translation.width,
+                    height: lastOffset.height + value.translation.height
+                )
+                offset = clampedOffset(proposed, scale: scale, baseSize: baseSize, cropSize: cropSize)
+            }
+            .onEnded { _ in
+                lastOffset = offset
+            }
+
+        let magnify = MagnificationGesture()
+            .onChanged { value in
+                let proposedScale = max(1, lastScale * value)
+                scale = proposedScale
+                offset = clampedOffset(offset, scale: proposedScale, baseSize: baseSize, cropSize: cropSize)
+            }
+            .onEnded { _ in
+                scale = max(1, scale)
+                offset = clampedOffset(offset, scale: scale, baseSize: baseSize, cropSize: cropSize)
+                lastScale = scale
+                lastOffset = offset
+            }
+
+        return ZStack {
+            Color.black.opacity(0.92)
+
+            Image(uiImage: sourceImage)
+                .resizable()
+                .frame(width: baseSize.width * scale, height: baseSize.height * scale)
+                .offset(offset)
+        }
+        .frame(width: cropSize.width, height: cropSize.height)
+        .clipShape(Rectangle())
+        .overlay(
+            Rectangle()
+                .stroke(theme.palette.accent, lineWidth: 2)
+        )
+        .gesture(drag)
+        .simultaneousGesture(magnify)
+        .onAppear {
+            offset = clampedOffset(offset, scale: scale, baseSize: baseSize, cropSize: cropSize)
+            lastOffset = offset
+        }
+    }
+
+    private func cropSize(in availableSize: CGSize) -> CGSize {
+        let screenAspect = availableSize.width / max(availableSize.height, 1)
+        var height = availableSize.height * 0.5
+        var width = height * screenAspect
+        let maxWidth = max(availableSize.width - 32, 1)
+
+        if width > maxWidth {
+            width = maxWidth
+            height = width / max(screenAspect, 0.1)
+        }
+
+        return CGSize(width: width, height: height)
+    }
+
+    private func baseImageSize(for cropSize: CGSize) -> CGSize {
+        let imageAspect = sourceImage.size.width / max(sourceImage.size.height, 1)
+        let cropAspect = cropSize.width / max(cropSize.height, 1)
+
+        if imageAspect > cropAspect {
+            return CGSize(width: cropSize.height * imageAspect, height: cropSize.height)
+        }
+
+        return CGSize(width: cropSize.width, height: cropSize.width / max(imageAspect, 0.1))
+    }
+
+    private func clampedOffset(_ proposed: CGSize, scale: CGFloat, baseSize: CGSize, cropSize: CGSize) -> CGSize {
+        let displayedWidth = baseSize.width * scale
+        let displayedHeight = baseSize.height * scale
+        let maxX = max((displayedWidth - cropSize.width) / 2, 0)
+        let maxY = max((displayedHeight - cropSize.height) / 2, 0)
+
+        return CGSize(
+            width: min(max(proposed.width, -maxX), maxX),
+            height: min(max(proposed.height, -maxY), maxY)
+        )
+    }
+
+    private func croppedImage(cropSize: CGSize, baseSize: CGSize) -> UIImage? {
+        let displayedSize = CGSize(width: baseSize.width * scale, height: baseSize.height * scale)
+        guard displayedSize.width > 0, displayedSize.height > 0 else { return nil }
+
+        let sourceRect = CGRect(
+            x: ((displayedSize.width - cropSize.width) / 2 - offset.width) * sourceImage.size.width / displayedSize.width,
+            y: ((displayedSize.height - cropSize.height) / 2 - offset.height) * sourceImage.size.height / displayedSize.height,
+            width: cropSize.width * sourceImage.size.width / displayedSize.width,
+            height: cropSize.height * sourceImage.size.height / displayedSize.height
+        ).intersection(CGRect(origin: .zero, size: sourceImage.size))
+
+        guard sourceRect.isNull == false, sourceRect.width > 0, sourceRect.height > 0 else { return nil }
+
+        let outputHeight: CGFloat = 1800
+        let outputWidth = outputHeight * cropSize.width / max(cropSize.height, 1)
+        let outputSize = CGSize(width: outputWidth, height: outputHeight)
+        let drawScale = outputSize.width / sourceRect.width
+        let renderer = UIGraphicsImageRenderer(size: outputSize)
+
+        return renderer.image { _ in
+            sourceImage.draw(in: CGRect(
+                x: -sourceRect.origin.x * drawScale,
+                y: -sourceRect.origin.y * drawScale,
+                width: sourceImage.size.width * drawScale,
+                height: sourceImage.size.height * drawScale
+            ))
+        }
+    }
+}
+
+private struct BackgroundPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.themeContext) private var theme
+    @Binding var selectedBackgroundID: String
+    @AppStorage("minigt.uploadedBackgroundVersion") private var uploadedBackgroundVersion = ""
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var cropPayload: BackgroundCropPayload?
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
+    ]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(AppBackgroundLibrary.options) { option in
+                        if option.isUpload {
+                            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                                BackgroundOptionCard(
+                                    option: option,
+                                    isSelected: selectedBackgroundID == option.id,
+                                    refreshID: uploadedBackgroundVersion
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Button {
+                                selectedBackgroundID = option.id
+                            } label: {
+                                BackgroundOptionCard(
+                                    option: option,
+                                    isSelected: selectedBackgroundID == option.id
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .background(theme.palette.background.ignoresSafeArea())
+            .navigationTitle("背景图片")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        dismiss()
+                    }
+                }
+            }
+            .onChange(of: selectedPhotoItem) { _, newItem in
+                loadSelectedPhoto(newItem)
+            }
+            .fullScreenCover(item: $cropPayload) { payload in
+                BackgroundCropperView(sourceImage: payload.image) { croppedImage in
+                    if AppBackgroundLibrary.saveUploadedImage(croppedImage) {
+                        uploadedBackgroundVersion = UUID().uuidString
+                        selectedBackgroundID = AppBackgroundLibrary.uploadedID
+                    }
+                    cropPayload = nil
+                } cancelAction: {
+                    cropPayload = nil
+                }
+            }
+        }
+    }
+
+    private func loadSelectedPhoto(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        Task {
+            defer { selectedPhotoItem = nil }
+            guard let data = try? await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data) else {
+                return
+            }
+            cropPayload = BackgroundCropPayload(image: image)
+        }
+    }
+}
+
+private struct BackgroundOptionCard: View {
+    @Environment(\.themeContext) private var theme
+    var option: AppBackgroundOption
+    var isSelected: Bool
+    var refreshID: String = ""
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                preview
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipShape(RoundedRectangle(cornerRadius: AppCorners.productArtwork, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppCorners.productArtwork, style: .continuous)
+                    .stroke(isSelected ? theme.palette.accent : theme.palette.elevated.opacity(0.8), lineWidth: isSelected ? 3 : 1)
+            )
+            .overlay(alignment: .topTrailing) {
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(theme.palette.accent)
+                        .background(.regularMaterial, in: Circle())
+                        .padding(8)
+                }
+            }
+        }
+        .aspectRatio(0.72, contentMode: .fit)
+        .padding(8)
+        .appSurface(cornerRadius: AppCorners.container)
+        .contentShape(RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var preview: some View {
+        if option.isDefault {
+            HStack(spacing: 0) {
+                Color(hex: "#F6F7F9")
+                Color(hex: "#0F1115")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay {
+                Text("默认")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(theme.palette.accent)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+            }
+        } else if option.isUpload {
+            if let image = AppBackgroundLibrary.image(for: option.id) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .id(refreshID)
+            } else {
+                theme.palette.elevated
+                    .overlay {
+                        VStack(spacing: 10) {
+                            Image(systemName: "plus")
+                                .font(.title.weight(.semibold))
+                            Text("上传图片")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .foregroundStyle(theme.palette.accent)
+                    }
+            }
+        } else if let image = AppBackgroundLibrary.image(for: option.id) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+        } else {
+            theme.palette.elevated
+                .overlay {
+                    Image(systemName: "photo")
+                        .font(.largeTitle)
+                        .foregroundStyle(theme.palette.secondaryText)
+                }
         }
     }
 }
@@ -2890,11 +3643,7 @@ private struct SettingsCardSection<Content: View>: View {
             VStack(spacing: 0) {
                 content
             }
-            .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous)
-                    .stroke(theme.palette.elevated.opacity(0.75), lineWidth: 1)
-            )
+            .appSurface(cornerRadius: AppCorners.container)
         }
     }
 }
@@ -2955,8 +3704,10 @@ private struct SettingsActionRow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(theme.palette.secondaryText.opacity(0.7))
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .frame(minHeight: 52)
             .padding(.horizontal, 14)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -3010,7 +3761,7 @@ private struct SettingsDivider: View {
     var body: some View {
         Rectangle()
             .fill(theme.palette.elevated.opacity(0.8))
-            .frame(height: 1 / UIScreen.main.scale)
+            .frame(height: 0.5)
             .padding(.leading, 56)
     }
 }
@@ -3029,7 +3780,7 @@ private struct ExportSheet: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
-                    .background(theme.palette.surface, in: RoundedRectangle(cornerRadius: AppCorners.container, style: .continuous))
+                    .appSurface(cornerRadius: AppCorners.container)
                     .padding()
             }
             .background(theme.palette.background)
@@ -3075,6 +3826,40 @@ private struct HelpSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(theme.palette.background)
             .navigationTitle("问题反馈")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct AboutSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.themeContext) private var theme
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 18) {
+                Rectangle()
+                    .fill(.black)
+                    .frame(width: 92, height: 92)
+
+                VStack(spacing: 6) {
+                    Text("MINIGT Space")
+                        .font(.headline)
+                        .foregroundStyle(theme.palette.primaryText)
+                    Text("版本号 1.0")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.palette.secondaryText)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(theme.palette.background)
+            .navigationTitle("关于")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") {
@@ -3602,6 +4387,32 @@ private enum ProductCatalogRemoteSource {
                 saveMetadata(metadata)
                 return nil
             }
+
+            guard (200..<300).contains(httpResponse.statusCode),
+                  let text = String(data: data, encoding: .utf8),
+                  let catalog = ProductCSVLoader.makeCatalog(from: text) else {
+                saveMetadata(metadata)
+                return nil
+            }
+
+            metadata.eTag = httpResponse.value(forHTTPHeaderField: "ETag") ?? metadata.eTag
+            metadata.lastModified = httpResponse.value(forHTTPHeaderField: "Last-Modified") ?? metadata.lastModified
+            saveCachedCSV(data)
+            saveMetadata(metadata)
+            return catalog
+        } catch {
+            return nil
+        }
+    }
+
+    nonisolated static func fetchRemoteCatalog() async -> CatalogData? {
+        var metadata = loadMetadata()
+        let request = URLRequest(url: remoteURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else { return nil }
+            metadata.lastCheckedAt = Date()
 
             guard (200..<300).contains(httpResponse.statusCode),
                   let text = String(data: data, encoding: .utf8),
