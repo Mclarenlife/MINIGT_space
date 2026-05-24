@@ -36,6 +36,10 @@ struct ContentView: View {
         needsOnboarding && isShowingInitialization == false
     }
 
+    init() {
+        Self.configureNavigationBarTitle()
+    }
+
     var body: some View {
         ZStack {
             if isShowingInitialization {
@@ -78,6 +82,12 @@ struct ContentView: View {
             return store.catalogLoadingProgress
         }
         return store.models.isEmpty ? 0.08 : 1
+    }
+
+    private static func configureNavigationBarTitle() {
+        UINavigationBar.appearance().titleTextAttributes = [
+            .font: UIFont.systemFont(ofSize: 18, weight: .semibold)
+        ]
     }
 
     private func beginInitializationGate() {
@@ -456,6 +466,12 @@ struct CollectionEntry: Identifiable, Codable, Hashable, Sendable {
     var hasDefect: Bool
 }
 
+struct WishlistEntry: Identifiable, Codable, Hashable, Sendable {
+    var id: Int { modelId }
+    var modelId: Int
+    var markedDate: Date
+}
+
 struct DisplayScene: Identifiable, Codable, Hashable, Sendable {
     var id: Int
     var name: String
@@ -487,13 +503,15 @@ struct PersistedAppState: Codable, Sendable {
     var scenes: [DisplayScene]
     var placements: [ScenePlacement]
     var wishlistModelIds: [Int]
+    var wishlistEntries: [WishlistEntry]
 
-    init(catalog: CatalogData, collections: [CollectionEntry], scenes: [DisplayScene], placements: [ScenePlacement], wishlistModelIds: [Int] = []) {
+    init(catalog: CatalogData, collections: [CollectionEntry], scenes: [DisplayScene], placements: [ScenePlacement], wishlistModelIds: [Int] = [], wishlistEntries: [WishlistEntry] = []) {
         self.catalog = catalog
         self.collections = collections
         self.scenes = scenes
         self.placements = placements
         self.wishlistModelIds = wishlistModelIds
+        self.wishlistEntries = wishlistEntries
     }
 
     init(from decoder: Decoder) throws {
@@ -502,7 +520,12 @@ struct PersistedAppState: Codable, Sendable {
         collections = try container.decode([CollectionEntry].self, forKey: .collections)
         scenes = try container.decode([DisplayScene].self, forKey: .scenes)
         placements = try container.decode([ScenePlacement].self, forKey: .placements)
-        wishlistModelIds = try container.decodeIfPresent([Int].self, forKey: .wishlistModelIds) ?? []
+        wishlistEntries = try container.decodeIfPresent([WishlistEntry].self, forKey: .wishlistEntries) ?? []
+        wishlistModelIds = try container.decodeIfPresent([Int].self, forKey: .wishlistModelIds) ?? wishlistEntries.map(\.modelId)
+
+        if wishlistEntries.isEmpty && wishlistModelIds.isEmpty == false {
+            wishlistEntries = wishlistModelIds.map { WishlistEntry(modelId: $0, markedDate: Date(timeIntervalSince1970: 0)) }
+        }
     }
 }
 
@@ -512,6 +535,7 @@ private struct InitialStoreState: Sendable {
     var collections: [Int: CollectionEntry]
     var placements: [ScenePlacement]
     var wishlistModelIds: Set<Int>
+    var wishlistMarkedDates: [Int: Date]
 
     nonisolated static func load(storageURL: URL, fallbackCatalog: CatalogData, fallbackScenes: [DisplayScene]) -> InitialStoreState {
         let catalog = ProductCatalogRemoteSource.loadCachedCatalog() ?? ProductCSVLoader.loadBundledCatalog() ?? fallbackCatalog
@@ -521,7 +545,8 @@ private struct InitialStoreState: Sendable {
                 scenes: fallbackScenes,
                 collections: [:],
                 placements: [],
-                wishlistModelIds: []
+                wishlistModelIds: [],
+                wishlistMarkedDates: [:]
             )
         }
 
@@ -532,13 +557,18 @@ private struct InitialStoreState: Sendable {
         }
         let placements = snapshot.placements.filter { modelIds.contains($0.modelId) }
         let wishlistModelIds = Set(snapshot.wishlistModelIds.filter { modelIds.contains($0) })
+        let wishlistMarkedDates = snapshot.wishlistEntries.reduce(into: [Int: Date]()) { result, entry in
+            guard modelIds.contains(entry.modelId) else { return }
+            result[entry.modelId] = entry.markedDate
+        }
 
         return InitialStoreState(
             catalog: catalog,
             scenes: snapshot.scenes.isEmpty ? fallbackScenes : snapshot.scenes,
             collections: collections,
             placements: placements,
-            wishlistModelIds: wishlistModelIds
+            wishlistModelIds: wishlistModelIds,
+            wishlistMarkedDates: wishlistMarkedDates
         )
     }
 }
@@ -593,6 +623,7 @@ final class CollectionStore: ObservableObject {
     }
 
     private let storageURL: URL
+    private var wishlistMarkedDates: [Int: Date] = [:]
     private var isReadyToPersist = false
     private var hasStartedCatalogLoading = false
     private var progressTask: Task<Void, Never>?
@@ -609,6 +640,7 @@ final class CollectionStore: ObservableObject {
         collections = [:]
         placements = []
         wishlistModelIds = []
+        wishlistMarkedDates = [:]
         isCatalogLoading = false
         catalogLoadingProgress = 0
     }
@@ -644,6 +676,7 @@ final class CollectionStore: ObservableObject {
         collections = initialState.collections
         placements = initialState.placements
         wishlistModelIds = initialState.wishlistModelIds
+        wishlistMarkedDates = initialState.wishlistMarkedDates
 
         isReadyToPersist = true
         progressTask?.cancel()
@@ -724,9 +757,14 @@ final class CollectionStore: ObservableObject {
         wishlistModelIds.contains(model.id)
     }
 
+    func wishlistMarkedDate(for model: MiniGTModel) -> Date? {
+        wishlistMarkedDates[model.id]
+    }
+
     func collect(_ entry: CollectionEntry) {
         collections[entry.modelId] = entry
         wishlistModelIds.remove(entry.modelId)
+        wishlistMarkedDates.removeValue(forKey: entry.modelId)
     }
 
     func removeCollection(modelId: Int) {
@@ -737,7 +775,9 @@ final class CollectionStore: ObservableObject {
     func toggleWanted(_ model: MiniGTModel) {
         if wishlistModelIds.contains(model.id) {
             wishlistModelIds.remove(model.id)
+            wishlistMarkedDates.removeValue(forKey: model.id)
         } else {
+            wishlistMarkedDates[model.id] = Date()
             wishlistModelIds.insert(model.id)
         }
     }
@@ -871,6 +911,7 @@ final class CollectionStore: ObservableObject {
             collections = Dictionary(uniqueKeysWithValues: snapshot.collections.map { ($0.modelId, $0) })
             placements = snapshot.placements
             wishlistModelIds = Set(snapshot.wishlistModelIds)
+            wishlistMarkedDates = Dictionary(uniqueKeysWithValues: snapshot.wishlistEntries.map { ($0.modelId, $0.markedDate) })
             save()
             return
         }
@@ -912,6 +953,7 @@ final class CollectionStore: ObservableObject {
         collections = [:]
         placements = []
         wishlistModelIds = []
+        wishlistMarkedDates = [:]
         isReadyToPersist = true
         save()
         refreshCatalogFromOSSIfNeeded(force: true, delay: 0)
@@ -945,6 +987,7 @@ final class CollectionStore: ObservableObject {
         collections = collections.filter { modelIds.contains($0.key) }
         placements = placements.filter { modelIds.contains($0.modelId) }
         wishlistModelIds = wishlistModelIds.filter { modelIds.contains($0) }
+        wishlistMarkedDates = wishlistMarkedDates.filter { modelIds.contains($0.key) }
     }
 
     private func descendantCategoryIds(from id: Int) -> Set<Int> {
@@ -996,7 +1039,10 @@ final class CollectionStore: ObservableObject {
             collections: collections.values.sorted { $0.modelId < $1.modelId },
             scenes: scenes,
             placements: placements,
-            wishlistModelIds: wishlistModelIds.sorted()
+            wishlistModelIds: wishlistModelIds.sorted(),
+            wishlistEntries: wishlistModelIds
+                .sorted()
+                .map { WishlistEntry(modelId: $0, markedDate: wishlistMarkedDates[$0] ?? Date(timeIntervalSince1970: 0)) }
         )
     }
 
@@ -1139,6 +1185,12 @@ private enum AppBackgroundLibrary {
     static let uploadedID = "uploaded"
     private static let folderName = "background"
     private static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "webp"]
+    private static let bundledBackgroundFileNames = [
+        "IMG_1363.JPG",
+        "IMG_1374.JPG",
+        "IMG_1380.JPG",
+        "mmexport1700978236470.JPG"
+    ]
 
     static var options: [AppBackgroundOption] {
         [defaultOption, uploadOption] + bundledImageOptions()
@@ -1194,11 +1246,20 @@ private enum AppBackgroundLibrary {
         if let resourceURL = Bundle.main.resourceURL {
             let backgroundURL = resourceURL.appendingPathComponent(folderName, isDirectory: true)
             urls.append(contentsOf: imageURLs(in: backgroundURL, fileManager: fileManager))
-            urls.append(contentsOf: imageURLs(in: resourceURL, fileManager: fileManager))
         }
+        urls.append(contentsOf: bundledBackgroundFileNames.compactMap(bundleURLForBackgroundFileName))
 
         return Array(Set(urls))
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    }
+
+    private static func bundleURLForBackgroundFileName(_ fileName: String) -> URL? {
+        let url = URL(fileURLWithPath: fileName)
+        let name = url.deletingPathExtension().lastPathComponent
+        let ext = url.pathExtension
+
+        return Bundle.main.url(forResource: name, withExtension: ext, subdirectory: folderName)
+            ?? Bundle.main.url(forResource: name, withExtension: ext)
     }
 
     private static func imageURLs(in directory: URL, fileManager: FileManager) -> [URL] {
@@ -1462,7 +1523,7 @@ private struct LibraryView: View {
                     .padding()
                 }
             }
-            .navigationTitle("MINIGT 库")
+            .navigationTitle("MINI Garage")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: "搜索车型、品牌、编号")
             .keyboardType(.asciiCapable)
@@ -2294,6 +2355,63 @@ private enum CollectionMode: String, CaseIterable, Identifiable {
         case .gallery: "展馆"
         }
     }
+
+    var symbolName: String {
+        switch self {
+        case .owned: "sparkles"
+        case .wanted: "heart"
+        case .gallery: "building.columns"
+        }
+    }
+}
+
+private enum CollectionSortKey: String, CaseIterable, Identifiable {
+    case price
+    case addedDate
+    case number
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .price: "按价格排序"
+        case .addedDate: "入库时间排序"
+        case .number: "按编号排序"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .price: "yensign.circle"
+        case .addedDate: "clock"
+        case .number: "number"
+        }
+    }
+}
+
+private enum CollectionSortDirection: String, CaseIterable, Identifiable {
+    case ascending
+    case descending
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .ascending: "升序"
+        case .descending: "降序"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .ascending: "arrow.up"
+        case .descending: "arrow.down"
+        }
+    }
+
+    mutating func toggle() {
+        self = self == .ascending ? .descending : .ascending
+    }
 }
 
 private struct CollectionTabView: View {
@@ -2301,15 +2419,23 @@ private struct CollectionTabView: View {
     @Environment(\.themeContext) private var theme
     @State private var mode: CollectionMode = .owned
     @State private var query = ""
+    @State private var selectedBrandId: Int?
+    @State private var selectedCategoryId: Int?
+    @State private var layout: LibraryLayout = .grid
+    @State private var sortKey: CollectionSortKey = .number
+    @State private var sortDirection: CollectionSortDirection = .descending
+    @State private var showsFilters = false
 
     private var ownedModels: [MiniGTModel] {
-        store.models(matching: query, brandId: nil, categoryId: nil, onlyCollected: true)
+        sortedModels(store.models(matching: query, brandId: selectedBrandId, categoryId: selectedCategoryId, onlyCollected: true))
     }
 
     private var wantedModels: [MiniGTModel] {
         let wantedIds = store.wishlistModelIds
-        return store.models(matching: query, brandId: nil, categoryId: nil)
-            .filter { wantedIds.contains($0.id) }
+        return sortedModels(
+            store.models(matching: query, brandId: selectedBrandId, categoryId: selectedCategoryId)
+                .filter { wantedIds.contains($0.id) }
+        )
     }
 
     var body: some View {
@@ -2317,31 +2443,73 @@ private struct CollectionTabView: View {
             ZStack {
                 AppBackgroundView()
 
-                VStack(spacing: 14) {
-                    Picker("藏品模式", selection: $mode) {
-                        ForEach(CollectionMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal)
-
-                    switch mode {
-                    case .owned:
-                        ownedGrid
-                    case .wanted:
-                        wantedGrid
-                    case .gallery:
-                        galleryPlaceholder
-                    }
+                switch mode {
+                case .owned:
+                    modelCollectionView(
+                        models: ownedModels,
+                        emptySymbolName: "sparkles",
+                        emptyTitle: "还没有点亮的模型",
+                        emptyMessage: "从库里进入模型详情，点亮后会出现在这里。"
+                    )
+                case .wanted:
+                    modelCollectionView(
+                        models: wantedModels,
+                        emptySymbolName: "heart",
+                        emptyTitle: "还没有想要的模型",
+                        emptyMessage: "从库里进入模型详情，标记想要后会出现在这里。"
+                    )
+                case .gallery:
+                    galleryPlaceholder
                 }
             }
-            .navigationTitle("我的藏品")
+            .navigationTitle(collectionNavigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: searchPrompt)
             .keyboardType(.asciiCapable)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled(true)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if mode != .gallery {
+                        Button {
+                            withAnimation(.snappy) {
+                                layout = layout == .grid ? .list : .grid
+                            }
+                        } label: {
+                            Image(systemName: layout == .grid ? "list.bullet" : "square.grid.2x2")
+                        }
+                        .accessibilityLabel("视图转换")
+
+                        sortMenu
+
+                        Button {
+                            sortDirection.toggle()
+                        } label: {
+                            Image(systemName: sortDirection.symbolName)
+                        }
+                        .accessibilityLabel(sortDirection.title)
+
+                        Button {
+                            showsFilters = true
+                        } label: {
+                            Image(systemName: "line.3.horizontal.decrease.circle")
+                        }
+                        .accessibilityLabel("筛选")
+                    }
+                }
+
+                if mode != .gallery {
+                    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    modeMenu
+                }
+            }
+            .sheet(isPresented: $showsFilters) {
+                CollectionFilterSheet(selectedBrandId: $selectedBrandId, selectedCategoryId: $selectedCategoryId)
+                    .presentationDetents([.medium, .large])
+            }
         }
     }
 
@@ -2353,53 +2521,89 @@ private struct CollectionTabView: View {
         }
     }
 
-    private var ownedGrid: some View {
-        ScrollView {
-            if ownedModels.isEmpty {
-                EmptyStateView(
-                    symbolName: "sparkles",
-                    title: "还没有点亮的模型",
-                    message: "从库里进入模型详情，点亮后会出现在这里。"
-                )
-                .padding(.top, 56)
-            } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 164), spacing: 12)], spacing: 12) {
-                    ForEach(ownedModels) { model in
-                        NavigationLink {
-                            ModelDetailView(model: model, glowModelId: .constant(nil))
-                        } label: {
-                            ModelCard(model: model)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding()
-            }
+    private var collectionNavigationTitle: String {
+        switch mode {
+        case .owned: "我的收藏"
+        case .wanted: "想要清单"
+        case .gallery: "展馆"
         }
     }
 
-    private var wantedGrid: some View {
+    private var modeMenu: some View {
+        Menu {
+            ForEach(CollectionMode.allCases) { item in
+                Button {
+                    withAnimation(.snappy) {
+                        mode = item
+                    }
+                } label: {
+                    Label(item.title, systemImage: mode == item ? "checkmark" : item.symbolName)
+                }
+            }
+        } label: {
+            Label(mode.title, systemImage: mode.symbolName)
+                .labelStyle(.titleAndIcon)
+        }
+        .accessibilityLabel("切换藏品页面")
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            ForEach(CollectionSortKey.allCases) { key in
+                Button {
+                    sortKey = key
+                } label: {
+                    Label(key.title, systemImage: sortKey == key ? "checkmark" : key.symbolName)
+                }
+            }
+        } label: {
+            Image(systemName: sortKey.symbolName)
+        }
+        .accessibilityLabel("排序")
+    }
+
+    @ViewBuilder
+    private func modelCollectionView(models: [MiniGTModel], emptySymbolName: String, emptyTitle: String, emptyMessage: String) -> some View {
         ScrollView {
-            if wantedModels.isEmpty {
-                EmptyStateView(
-                    symbolName: "heart",
-                    title: "还没有想要的模型",
-                    message: "从库里进入模型详情，标记想要后会出现在这里。"
+            VStack(spacing: 12) {
+                FilterSummary(
+                    brand: store.brands.first { $0.id == selectedBrandId }?.name,
+                    category: store.categories.first { $0.id == selectedCategoryId }?.name,
+                    clearAction: clearFilters
                 )
-                .padding(.top, 56)
-            } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 164), spacing: 12)], spacing: 12) {
-                    ForEach(wantedModels) { model in
-                        NavigationLink {
-                            ModelDetailView(model: model, glowModelId: .constant(nil))
-                        } label: {
-                            ModelCard(model: model)
+
+                if models.isEmpty {
+                    EmptyStateView(
+                        symbolName: emptySymbolName,
+                        title: emptyTitle,
+                        message: emptyMessage
+                    )
+                    .padding(.top, 44)
+                } else if layout == .grid {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 164), spacing: 12)], spacing: 12) {
+                        ForEach(models) { model in
+                            NavigationLink {
+                                ModelDetailView(model: model, glowModelId: .constant(nil))
+                            } label: {
+                                ModelCard(model: model)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                    }
+                } else {
+                    LazyVStack(spacing: 10) {
+                        ForEach(models) { model in
+                            NavigationLink {
+                                ModelDetailView(model: model, glowModelId: .constant(nil))
+                            } label: {
+                                ModelRow(model: model)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
-                .padding()
             }
+            .padding()
         }
     }
 
@@ -2411,6 +2615,120 @@ private struct CollectionTabView: View {
                 message: "这里会用于之后重构展示功能。"
             )
             .padding(.top, 56)
+        }
+    }
+
+    private func clearFilters() {
+        selectedBrandId = nil
+        selectedCategoryId = nil
+    }
+
+    private func sortedModels(_ models: [MiniGTModel]) -> [MiniGTModel] {
+        models.sorted { lhs, rhs in
+            switch sortKey {
+            case .price:
+                return optionalSort(lhsValue: store.collections[lhs.id]?.price, rhsValue: store.collections[rhs.id]?.price, lhs: lhs, rhs: rhs)
+            case .addedDate:
+                let lhsDate = store.collections[lhs.id]?.collectedDate ?? store.wishlistMarkedDate(for: lhs)
+                let rhsDate = store.collections[rhs.id]?.collectedDate ?? store.wishlistMarkedDate(for: rhs)
+                return optionalSort(lhsValue: lhsDate, rhsValue: rhsDate, lhs: lhs, rhs: rhs)
+            case .number:
+                return numberSort(lhs, rhs)
+            }
+        }
+    }
+
+    private func optionalSort<T: Comparable>(lhsValue: T?, rhsValue: T?, lhs: MiniGTModel, rhs: MiniGTModel) -> Bool {
+        switch (lhsValue, rhsValue) {
+        case let (lhsValue?, rhsValue?):
+            if lhsValue != rhsValue {
+                return sortDirection == .ascending ? lhsValue < rhsValue : lhsValue > rhsValue
+            }
+        case (.some, nil):
+            return true
+        case (nil, .some):
+            return false
+        case (nil, nil):
+            break
+        }
+
+        return numberSort(lhs, rhs)
+    }
+
+    private func numberSort(_ lhs: MiniGTModel, _ rhs: MiniGTModel) -> Bool {
+        let lhsNumber = numberValue(for: lhs)
+        let rhsNumber = numberValue(for: rhs)
+
+        if lhsNumber != rhsNumber {
+            return sortDirection == .ascending ? lhsNumber < rhsNumber : lhsNumber > rhsNumber
+        }
+
+        return sortDirection == .ascending ? lhs.id < rhs.id : lhs.id > rhs.id
+    }
+
+    private func numberValue(for model: MiniGTModel) -> Int {
+        let digits = model.modelNumber?.filter(\.isNumber) ?? ""
+        return Int(digits) ?? model.id
+    }
+}
+
+private struct CollectionFilterSheet: View {
+    @EnvironmentObject private var store: CollectionStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.themeContext) private var theme
+    @Binding var selectedBrandId: Int?
+    @Binding var selectedCategoryId: Int?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("品牌") {
+                    FilterOptionRow(title: "全部品牌", isSelected: selectedBrandId == nil) {
+                        selectedBrandId = nil
+                    }
+
+                    ForEach(store.brands.sorted { $0.sortOrder < $1.sortOrder }) { brand in
+                        FilterOptionRow(title: brand.name, isSelected: selectedBrandId == brand.id) {
+                            selectedBrandId = brand.id
+                        }
+                    }
+                }
+
+                Section("分类") {
+                    FilterOptionRow(title: "全部分类", isSelected: selectedCategoryId == nil) {
+                        selectedCategoryId = nil
+                    }
+
+                    ForEach(store.rootCategories()) { root in
+                        FilterOptionRow(title: root.name, isSelected: selectedCategoryId == root.id) {
+                            selectedCategoryId = root.id
+                        }
+
+                        ForEach(store.descendants(of: root)) { child in
+                            FilterOptionRow(title: "  \(child.name)", isSelected: selectedCategoryId == child.id) {
+                                selectedCategoryId = child.id
+                            }
+                        }
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(theme.palette.background)
+            .navigationTitle("筛选")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("重置") {
+                        selectedBrandId = nil
+                        selectedCategoryId = nil
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
         }
     }
 }
@@ -3282,13 +3600,20 @@ private struct CatalogUpdateAlert: Identifiable {
     var message: String
 }
 
-private struct BackgroundCropPayload: Identifiable {
+private struct BackgroundCropPayload: Identifiable, Hashable {
     let id = UUID()
     var image: UIImage
+
+    static func == (lhs: BackgroundCropPayload, rhs: BackgroundCropPayload) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }
 
 private struct BackgroundCropperView: View {
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.themeContext) private var theme
     var sourceImage: UIImage
     var completion: (UIImage) -> Void
@@ -3298,40 +3623,20 @@ private struct BackgroundCropperView: View {
     @State private var lastScale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
+    @State private var currentCropSize: CGSize = .zero
+    @State private var currentBaseSize: CGSize = .zero
 
     var body: some View {
         GeometryReader { proxy in
-            let cropSize = cropSize(in: proxy.size)
+            let safeAreaInsets = proxy.safeAreaInsets
+            let safeSize = CGSize(
+                width: proxy.size.width,
+                height: max(proxy.size.height - safeAreaInsets.top - safeAreaInsets.bottom, 1)
+            )
+            let cropSize = cropSize(in: safeSize)
             let baseSize = baseImageSize(for: cropSize)
 
             VStack(spacing: 18) {
-                HStack {
-                    Button("取消") {
-                        cancelAction()
-                        dismiss()
-                    }
-
-                    Spacer()
-
-                    Text("裁剪背景")
-                        .font(.headline)
-                        .foregroundStyle(theme.palette.primaryText)
-
-                    Spacer()
-
-                    Button("完成") {
-                        if let image = croppedImage(cropSize: cropSize, baseSize: baseSize) {
-                            completion(image)
-                        } else {
-                            cancelAction()
-                        }
-                        dismiss()
-                    }
-                    .fontWeight(.semibold)
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 18)
-
                 Spacer(minLength: 12)
 
                 cropArea(cropSize: cropSize, baseSize: baseSize)
@@ -3343,8 +3648,46 @@ private struct BackgroundCropperView: View {
                 Spacer(minLength: 18)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
+            .padding(.bottom, safeAreaInsets.bottom)
             .background(theme.palette.background.ignoresSafeArea())
+            .onAppear {
+                updateCurrentLayout(cropSize: cropSize, baseSize: baseSize)
+            }
+            .onChange(of: proxy.size) { _, _ in
+                updateCurrentLayout(cropSize: cropSize, baseSize: baseSize)
+            }
         }
+        .navigationTitle("裁剪背景")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("取消") {
+                    cancelAction()
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("完成") {
+                    // Geometry-dependent crop is handled by an invisible layout pass below.
+                    completeFromCurrentLayout()
+                }
+                .fontWeight(.semibold)
+            }
+        }
+    }
+
+    private func completeFromCurrentLayout() {
+        let cropSize = currentCropSize == .zero ? CGSize(width: 1, height: 1) : currentCropSize
+        let baseSize = currentBaseSize == .zero ? baseImageSize(for: cropSize) : currentBaseSize
+        if let image = croppedImage(cropSize: cropSize, baseSize: baseSize) {
+            completion(image)
+        } else {
+            cancelAction()
+        }
+    }
+
+    private func updateCurrentLayout(cropSize: CGSize, baseSize: CGSize) {
+        currentCropSize = cropSize
+        currentBaseSize = baseSize
     }
 
     private func cropArea(cropSize: CGSize, baseSize: CGSize) -> some View {
@@ -3517,7 +3860,7 @@ private struct BackgroundPickerSheet: View {
             .onChange(of: selectedPhotoItem) { _, newItem in
                 loadSelectedPhoto(newItem)
             }
-            .fullScreenCover(item: $cropPayload) { payload in
+            .navigationDestination(item: $cropPayload) { payload in
                 BackgroundCropperView(sourceImage: payload.image) { croppedImage in
                     if AppBackgroundLibrary.saveUploadedImage(croppedImage) {
                         uploadedBackgroundVersion = UUID().uuidString
